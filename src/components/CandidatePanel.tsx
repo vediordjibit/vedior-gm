@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { 
   User, Briefcase, FileText, Settings, LogOut, 
-  Search, Bell, CheckCircle2, CheckCircle, Clock, X, Eye,
+  Search, Bell, CheckCircle2, Clock, X, Eye,
   LayoutDashboard, Send, MapPin, Calendar, ArrowRight,
   TrendingUp, Activity, MessageSquare, ShieldCheck, Star,
-  AlertCircle
+  AlertCircle, MoreVertical
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
