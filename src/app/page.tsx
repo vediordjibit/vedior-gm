@@ -1,6 +1,6 @@
 'use client';
 import { useState, useEffect } from 'react';
-import { auth } from '@/lib/firebase';
+import { auth } from '../lib/firebase';
 import { signOut } from 'firebase/auth';
 import AdminPanel from '@/components/AdminPanel';
 import CandidatePanel from '@/components/CandidatePanel';
