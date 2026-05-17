@@ -529,7 +529,7 @@ export default function AdminPanel({ onBack, lang, setLang, t }: AdminPanelProps
                         <th className="px-10 py-6 text-[10px] font-black uppercase text-gray-400 tracking-[0.2em]">{t.admin.expiresOn}</th>
                         <th className="px-10 py-6 text-[10px] font-black uppercase text-gray-400 tracking-[0.2em]">{t.admin.status}</th>
                         <th className="px-10 py-6 text-right text-[10px] font-black uppercase text-gray-400 tracking-[0.2em]">{t.admin.actions}</th>
-                      </table>
+                      </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-50">
                       {filteredJobs.map(job => (
