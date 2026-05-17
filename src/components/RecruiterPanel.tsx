@@ -10,7 +10,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   AreaChart, Area
 } from 'recharts';
-import { auth, db } from '@/lib/firebase';   // <-- MODIFICATION ICI
+import { auth, db } from '../lib/firebase';   // <-- MODIFICATION ICI
 
 const Logo = ({ inverted = false, size = "sm" }: { inverted?: boolean; size?: "sm" | "md" | "lg" }) => {
   const sizes = {

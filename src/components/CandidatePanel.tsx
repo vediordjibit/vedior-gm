@@ -10,7 +10,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
 } from 'recharts';
-import { auth, db } from '@/lib/firebase';
+import { auth, db } from '../lib/firebase';
 import { 
   collection, query, where, orderBy, onSnapshot, doc, setDoc, addDoc, serverTimestamp 
 } from 'firebase/firestore';
