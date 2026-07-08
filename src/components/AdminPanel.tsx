@@ -1909,26 +1909,57 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
       const cred = await createUserWithEmailAndPassword(secondaryAuth, newUser.email, tempPassword);
       await updateProfile(cred.user, { displayName: displayName || '' });
 
-      // Envoyer un email "Définissez votre mot de passe" à TOUS les nouveaux utilisateurs.
-      // L'utilisateur recevra un lien Firebase pour choisir son propre mot de passe
-      // et accéder à son compte — il n'a jamais besoin de connaître le mot de passe temporaire.
-      // IMPORTANT : on capture le résultat réel — l'app étant en export statique,
-      // il n'y a PAS de route API serveur ; sendPasswordResetEmail (client Firebase) est la SEULE
-      // méthode d'envoi qui fonctionne réellement en production.
-      let realEmailSent = false;
-      try {
-        await sendPasswordResetEmail(secondaryAuth, newUser.email);
-        realEmailSent = true;
-      } catch (resetErr: any) {
-        console.error('sendPasswordResetEmail failed:', resetErr);
-        realEmailSent = false;
-      }
-
       // Déconnecter immédiatement l'instance secondaire — l'admin n'est pas affecté
       await signOut(secondaryAuth);
 
       // ── 2. Générer l'ID VGM (recruteurs & candidats uniquement)
       const tempId = newUser.role !== 'admin' ? await generateTempId() : '';
+
+      // ── 2bis. Envoyer l'email de bienvenue via notre route Resend (template perso).
+      // Pour recruiter/candidate : passe par /api/send-welcome (noreply@vediorgm.com + reply-to Gmail).
+      // Pour admin (pas de template dédié) : on garde le mail natif Firebase en secours.
+      let realEmailSent = false;
+      try {
+        if (newUser.role === 'recruiter') {
+          const res = await fetch('/api/send-welcome', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              type: 'recruiter',
+              companyName: newUser.companyName || '',
+              contactName: newUser.contactName || newUser.companyName || '',
+              email: newUser.email,
+            }),
+          });
+          realEmailSent = res.ok;
+          if (!res.ok) console.error('send-welcome (recruiter) failed:', await res.text());
+        } else if (newUser.role === 'candidate') {
+          const res = await fetch('/api/send-welcome', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              type: 'candidate',
+              fullName: newUser.fullName || '',
+              email: newUser.email,
+              vgmId: tempId,
+              tempPassword,
+            }),
+          });
+          realEmailSent = res.ok;
+          if (!res.ok) console.error('send-welcome (candidate) failed:', await res.text());
+        } else {
+          // Admin : pas de template Resend dédié, on garde le lien Firebase natif
+          const secondaryApp2 = getApps().find(a => a.name === 'Secondary')
+            ?? initializeApp(getApp().options, 'Secondary');
+          const secondaryAuth2 = getAuth(secondaryApp2);
+          await sendPasswordResetEmail(secondaryAuth2, newUser.email);
+          await signOut(secondaryAuth2);
+          realEmailSent = true;
+        }
+      } catch (emailErr: any) {
+        console.error('Welcome email failed:', emailErr);
+        realEmailSent = false;
+      }
 
       // ── 3. Firestore ────────────────────────────────────────────
       const baseData: any = {
@@ -2037,10 +2068,8 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
       }
 
       // ── 4. Email de bienvenue ────────────────────────────────────
-      // NOTE : l'app tourne en export statique (output: export), donc AUCUNE route
-      // API serveur (/api/...) n'existe en production — ces appels échouaient en 404
-      // silencieux. L'envoi réel se fait uniquement via sendPasswordResetEmail
-      // (Firebase Auth client) ci-dessus, capturé dans `realEmailSent`.
+      // L'envoi réel se fait via /api/send-welcome (Resend, template perso) ci-dessus,
+      // capturé dans `realEmailSent`.
 
       // ── 5. Afficher les identifiants à l'admin ──────────────────
       setGeneratedCredentials({

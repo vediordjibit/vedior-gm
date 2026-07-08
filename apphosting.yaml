@@ -15,3 +15,8 @@ env:
 
   - variable: RESEND_API_KEY
     secret: RESEND_API_KEY
+
+  - variable: ADMIN_SDK_KEY
+    secret: FIREBASE_SERVICE_ACCOUNT
+    availability:
+      - RUNTIME

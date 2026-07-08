@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Resend } from 'resend';
+import { adminAuth } from '../../../lib/firebaseAdmin';
 
 const resend = new Resend(process.env.RESEND_API_KEY);
+
+// URL vers laquelle l'utilisateur est renvoyé après avoir défini son mot de passe
+const ACTION_URL = 'https://vedior-gm--vediorgm.us-central1.hosted.app/login';
 
 // Email template for recruiter
 function recruiterEmailHTML(data: { companyName: string; contactName: string; email: string; resetLink: string }) {
@@ -177,7 +181,20 @@ export async function POST(req: NextRequest) {
     const { type, ...data } = body;
 
     if (type === 'recruiter') {
-      const { companyName, contactName, email, resetLink } = data;
+      const { companyName, contactName, email } = data;
+
+      // Génère le lien "définir mot de passe" via Admin SDK.
+      // Ceci NE déclenche PAS l'email natif de Firebase — seul un lien est retourné,
+      // qu'on insère ensuite dans notre propre template envoyé via Resend.
+      let resetLink: string;
+      try {
+        resetLink = await adminAuth.generatePasswordResetLink(email, {
+          url: ACTION_URL,
+          handleCodeInApp: false,
+        });
+      } catch (linkErr: any) {
+        return NextResponse.json({ error: `Génération du lien échouée: ${linkErr.message}` }, { status: 400 });
+      }
 
       const { error } = await resend.emails.send({
         from: 'Vedior GM <noreply@vediorgm.com>',
