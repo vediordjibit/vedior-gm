@@ -1,15 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // ── SSR mode — supprime output:'export' pour activer les routes API ──
-  // Firebase App Hosting gère le SSR nativement (pas besoin de "out")
-
+  output: 'standalone',
   async headers() {
     return [
       {
         source: '/(.*)',
         headers: [
           {
-            // Permet Google OAuth popup
             key: 'Cross-Origin-Opener-Policy',
             value: 'same-origin-allow-popups',
           },
