@@ -7,12 +7,12 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "apphosting-adapter-nextjs-build",
+    "build": "next build",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
-    "@apphosting/adapter-nextjs": "14.0.10",
+    "@apphosting/adapter-nextjs": "^14.0.21",
     "@emailjs/browser": "^4.4.1",
     "@tailwindcss/postcss": "^4.3.2",
     "@types/node": "^20",

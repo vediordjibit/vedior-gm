@@ -9,5 +9,12 @@ runConfig:
 env:
   - variable: NODE_ENV
     value: production
+
+  - variable: GROQ_API_KEY
+    secret: GROQ_API_KEY
+
   - variable: RESEND_API_KEY
     secret: RESEND_API_KEY
+
+  - variable: GOOGLE_NODE_RUN_SCRIPTS
+    value: ""
