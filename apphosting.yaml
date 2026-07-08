@@ -15,6 +15,3 @@ env:
 
   - variable: RESEND_API_KEY
     secret: RESEND_API_KEY
-
-  - variable: GOOGLE_NODE_RUN_SCRIPTS
-    value: ""
