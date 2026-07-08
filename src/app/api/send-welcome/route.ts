@@ -180,7 +180,8 @@ export async function POST(req: NextRequest) {
       const { companyName, contactName, email, resetLink } = data;
 
       const { error } = await resend.emails.send({
-        from: 'Vedior GM <onboarding@resend.dev>',
+        from: 'Vedior GM <noreply@vediorgm.com>',
+        replyTo: 'vediordjib.it@gmail.com',
         to: email,
         subject: `Votre compte recruteur Vedior GM est prêt`,
         html: recruiterEmailHTML({ companyName, contactName, email, resetLink }),
@@ -193,7 +194,8 @@ export async function POST(req: NextRequest) {
       const { fullName, email, vgmId, tempPassword } = data;
 
       const { error } = await resend.emails.send({
-        from: 'Vedior GM <onboarding@resend.dev>',
+        from: 'Vedior GM <noreply@vediorgm.com>',
+        replyTo: 'vediordjib.it@gmail.com',
         to: email,
         subject: `Votre dossier candidat Vedior GM — Identifiant : ${vgmId}`,
         html: candidateEmailHTML({ fullName, email, vgmId, tempPassword }),
