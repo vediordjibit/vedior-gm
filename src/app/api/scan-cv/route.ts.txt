@@ -1,3 +1,6 @@
+// src/app/api/scan-cv/route.ts
+export const dynamic = 'force-dynamic';
+
 import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(req: NextRequest) {
@@ -9,7 +12,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'fileBase64 et mimeType requis' }, { status: 400 });
     }
 
-    const groqKey = process.env.GROQ_API_KEY || process.env.NEXT_PUBLIC_GROQ_API_KEY;
+    const groqKey = process.env.GROQ_API_KEY;
     if (!groqKey) {
       return NextResponse.json({ error: 'GROQ_API_KEY non configurée' }, { status: 500 });
     }
@@ -17,35 +20,43 @@ export async function POST(req: NextRequest) {
     const isPDF = mimeType === 'application/pdf';
     const isImage = mimeType.startsWith('image/');
 
-    const prompt = `Tu es un expert RH. Analyse ce CV et extrais toutes les informations disponibles.
+    const prompt = `Tu es un expert RH spécialisé dans le marché de l'emploi de Djibouti.
 
-Réponds UNIQUEMENT avec un objet JSON valide (sans backticks, sans commentaires) avec ces champs exacts :
+Contexte local important :
+- Universités : Université de Djibouti (UoD), IUT Djibouti, ISERH, Institut Supérieur de Gestion
+- Entreprises locales : Port de Djibouti, PAID, DMP, Doraleh Container Terminal (DCT), Djibouti Telecom, ONEAD, EDD, CDE, Banque de Djibouti, BCIMR, SGTD, SIDEM, Gulf of Aden Security, Kempinski, Sheraton, Djibouti Palace, CHN
+- Secteurs dominants : BTP & infrastructure portuaire, Logistique & maritime, Hôtellerie & tourisme, Sécurité, Santé, Administration & finance
+- Nationalités courantes : Djiboutienne, Éthiopienne, Somalienne, Française, Yéménite, Érythréenne
+- Langues locales : Français, Arabe, Somali, Afar, Anglais
+- Quartiers de Djibouti : Balbala, Arhiba, Plateau du Serpent, Ali Sabieh, Tadjoura, Obock, Dikhil
+
+Analyse ce CV et extrais toutes les informations disponibles.
+
+Réponds UNIQUEMENT avec un objet JSON valide (sans backticks, sans commentaires) :
 {
   "fullName": "Prénom Nom ou null",
   "email": "email@exemple.com ou null",
   "phone": "+253... ou null",
   "whatsapp": "+253... ou null",
-  "nationality": "ex: Djiboutienne ou null",
+  "nationality": "ex: Djiboutienne, Éthiopienne, Française ou null",
   "gender": "M ou F ou null",
-  "address": "ville, pays ou null",
+  "address": "ville ou quartier ou null",
   "education": "dernier diplôme ou null",
-  "experience": "5 (nombre entier, années uniquement) ou 0",
+  "experience": "5 (entier, années uniquement) ou 0",
   "jobTitle": "poste actuel ou recherché ou null",
   "sector": "btp ou logistics ou hospitality ou security ou catering ou commerce ou healthcare ou admin",
-  "languages": "Français, Anglais, Arabe ou null",
+  "languages": "Français, Arabe, Somali, Afar, Anglais... ou null",
   "skills": "compétences clés séparées virgule ou null",
   "availability": "immediate ou 1_week ou 1_month ou 3_months",
   "summary": "résumé professionnel 2-3 phrases ou null"
 }
 
-Si une information est absente du CV, mets null pour ce champ.
-Pour le secteur, choisis le plus proche parmi les valeurs proposées.
+Si une information est absente du CV, mets null.
 Réponds UNIQUEMENT avec le JSON, rien d'autre.`;
 
     let messages: any[];
 
     if (isImage) {
-      // Groq vision model for images
       messages = [{
         role: 'user',
         content: [
@@ -57,16 +68,19 @@ Réponds UNIQUEMENT avec le JSON, rien d'autre.`;
         ],
       }];
     } else {
-      // For PDF: extract text via base64 decode attempt, then send as text
-      // Groq doesn't support PDF natively, so we send the raw base64 as text context
       const decoded = Buffer.from(fileBase64, 'base64').toString('utf-8')
         .replace(/[^\x20-\x7E\xA0-\xFF\n\r\t]/g, ' ')
         .replace(/\s+/g, ' ')
+        .trim()
         .slice(0, 6000);
+
+      const textContent = decoded.length > 30
+        ? `Contenu extrait du CV (PDF) :\n${decoded}`
+        : `Note: Ce PDF semble être un scan image. Contenu brut : ${decoded.slice(0, 500)}`;
 
       messages = [{
         role: 'user',
-        content: `${prompt}\n\nContenu extrait du CV (PDF) :\n${decoded}`,
+        content: `${prompt}\n\n${textContent}`,
       }];
     }
 
@@ -78,12 +92,7 @@ Réponds UNIQUEMENT avec le JSON, rien d'autre.`;
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${groqKey}`,
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        max_tokens: 1000,
-        temperature: 0.1,
-      }),
+      body: JSON.stringify({ model, messages, max_tokens: 1000, temperature: 0.1 }),
     });
 
     if (!response.ok) {
@@ -102,7 +111,6 @@ Réponds UNIQUEMENT avec le JSON, rien d'autre.`;
     try {
       profile = JSON.parse(clean);
     } catch {
-      // Try to extract JSON from text
       const match = clean.match(/\{[\s\S]*\}/);
       if (match) {
         try { profile = JSON.parse(match[0]); }

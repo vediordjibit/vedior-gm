@@ -14,7 +14,7 @@ import {
   Clock, ArrowRight, Trophy, Edit3, Check, Trash2
 } from 'lucide-react';
 import { db } from '../lib/firebase';
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, updateDoc, serverTimestamp, onSnapshot, collection, query, where, getDocs, addDoc } from 'firebase/firestore';
 
 // ─────────────────────────────────────────────
 // Types
@@ -26,6 +26,7 @@ interface CandidatePipelineEntry {
   step: PipelineStep;
   linkedAt?: string;
   linkedMode?: 'ai' | 'manual';
+  propositionId?: string; // links back to the propositions doc shown to the recruiter
   cvSentAt?: string;
   interviewDate?: string;
   interviewDoneAt?: string;
@@ -62,6 +63,68 @@ interface AIMatchResult {
   reasons: string[];
   concerns: string[];
 }
+
+// ─────────────────────────────────────────────
+// Pondérations de matching (configurables depuis l'Admin > Réglages)
+// Stockées dans Firestore : settings_matching/config
+// ─────────────────────────────────────────────
+interface MatchingWeights {
+  algo: {
+    sector: number;
+    sectorPartial: number;
+    experience: number;
+    experiencePartial: number;
+    experiencePartialRatio: number; // ex: 0.7 = 70% de l'exp. requise
+    availabilityImmediate: number;
+    availability1Month: number;
+    availability2Months: number;
+    education: number;
+    educationLower: number;
+  };
+  manual: {
+    sector: number;
+    sectorOther: number;
+    experience: number;
+    experiencePartial: number;
+    experiencePartialGap: number; // ex: 2 = on accepte jusqu'à -2 ans
+    availabilityImmediate: number;
+    availabilityOther: number;
+    diploma: number;
+    diplomaOther: number;
+    diplomaNoneRequired: number;
+    skillsMax: number;
+    skillsPerMatch: number;
+  };
+}
+
+const DEFAULT_MATCHING_WEIGHTS: MatchingWeights = {
+  algo: {
+    sector: 40,
+    sectorPartial: 20,
+    experience: 30,
+    experiencePartial: 15,
+    experiencePartialRatio: 0.7,
+    availabilityImmediate: 15,
+    availability1Month: 10,
+    availability2Months: 5,
+    education: 15,
+    educationLower: 8,
+  },
+  manual: {
+    sector: 40,
+    sectorOther: 5,
+    experience: 25,
+    experiencePartial: 12,
+    experiencePartialGap: 2,
+    availabilityImmediate: 15,
+    availabilityOther: 5,
+    diploma: 10,
+    diplomaOther: 3,
+    diplomaNoneRequired: 10,
+    skillsMax: 10,
+    skillsPerMatch: 4,
+  },
+};
 
 interface MatchingPanelProps {
   need: any;
@@ -360,6 +423,25 @@ function PipelineCard({
 export default function MatchingPanel({ need, candidates, onLink, linkedIds = new Set() }: MatchingPanelProps) {
   const [mode, setMode] = useState<'ai' | 'manual'>('ai');
 
+  // ── Pondérations de matching (dynamiques, depuis settings_matching/config) ──
+  const [weights, setWeights] = useState<MatchingWeights>(DEFAULT_MATCHING_WEIGHTS);
+
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, 'settings_matching', 'config'), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data() as any;
+        setWeights({
+          algo: { ...DEFAULT_MATCHING_WEIGHTS.algo, ...(data.algo || {}) },
+          manual: { ...DEFAULT_MATCHING_WEIGHTS.manual, ...(data.manual || {}) },
+        });
+      }
+    }, () => {
+      // En cas d'erreur (ex: doc inexistant sans permissions), garder les valeurs par défaut
+      setWeights(DEFAULT_MATCHING_WEIGHTS);
+    });
+    return () => unsub();
+  }, []);
+
   // Pipeline state — loaded from need.candidatePipeline
   const [pipeline, setPipeline] = useState<CandidatePipelineEntry[]>(() => {
     if (need?.candidatePipeline && Array.isArray(need.candidatePipeline)) {
@@ -377,9 +459,16 @@ export default function MatchingPanel({ need, candidates, onLink, linkedIds = ne
     }
   }, [need?.candidatePipeline]);
 
-  // AI state
+  // AI state — initialise depuis le cache Firestore (need.aiMatchingCache) pour éviter
+  // de relancer Groq inutilement à chaque réouverture de l'onglet.
   const [aiLoading, setAiLoading] = useState(false);
-  const [aiResults, setAiResults] = useState<AIMatchResult[]>([]);
+  const [aiResults, setAiResults] = useState<AIMatchResult[]>(() => {
+    if (need?.aiMatchingCache?.results && Array.isArray(need.aiMatchingCache.results)) {
+      return need.aiMatchingCache.results;
+    }
+    return [];
+  });
+  const [aiCachedAt, setAiCachedAt] = useState<string | null>(need?.aiMatchingCache?.cachedAt || null);
   const [aiError, setAiError] = useState<string | null>(null);
 
   // Manual state — filtres avancés
@@ -405,6 +494,34 @@ export default function MatchingPanel({ need, candidates, onLink, linkedIds = ne
     }
   };
 
+  // ── Notify candidate when their pipeline step changes ──
+  const notifyCandidate = async (candidateId: string, step: PipelineStep, extra?: Partial<CandidatePipelineEntry>) => {
+    const labels: Record<PipelineStep, { title: string; message: string } | null> = {
+      linked: { title: 'Votre profil a été sélectionné', message: `Votre profil correspond à une offre "${need?.jobTitle || need?.title || ''}" et a été transmis pour étude.` },
+      cv_sent: { title: 'Votre CV a été transmis', message: `Votre candidature a été envoyée au recruteur pour le poste "${need?.jobTitle || need?.title || ''}".` },
+      interview_planned: { title: 'Entretien planifié', message: extra?.interviewDate ? `Un entretien a été planifié le ${new Date(extra.interviewDate).toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', hour: '2-digit', minute: '2-digit' })}.` : 'Un entretien a été planifié pour votre candidature.' },
+      interview_done: { title: 'Entretien réalisé', message: `Votre entretien pour "${need?.jobTitle || need?.title || ''}" a été enregistré. Le recruteur va statuer prochainement.` },
+      placed: { title: 'Félicitations, vous êtes recruté(e) !', message: `Vous avez été retenu(e) pour le poste "${need?.jobTitle || need?.title || ''}". 🎉` },
+      rejected: { title: 'Mise à jour de votre candidature', message: `Votre candidature pour "${need?.jobTitle || need?.title || ''}" n'a pas été retenue${extra?.rejectedReason ? ` — ${extra.rejectedReason}` : ''}.` },
+    };
+    const payload = labels[step];
+    if (!payload) return;
+    try {
+      await addDoc(collection(db, 'notifications'), {
+        userId: candidateId,
+        type: 'pipeline_update',
+        title: payload.title,
+        message: payload.message,
+        needId: need?.id,
+        step,
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.warn('Candidate pipeline notification failed:', e);
+    }
+  };
+
   // ── Update one entry ──
   const handleUpdateEntry = async (candidateId: string, updates: Partial<CandidatePipelineEntry>) => {
     const updated = pipeline.map(e =>
@@ -412,6 +529,29 @@ export default function MatchingPanel({ need, candidates, onLink, linkedIds = ne
     );
     setPipeline(updated);
     await savePipeline(updated);
+
+    // Notify the candidate whenever their step changes
+    if (updates.step) {
+      notifyCandidate(candidateId, updates.step, updates);
+    }
+
+    // Reverse-sync: keep the linked proposition's status aligned with the pipeline step
+    // (candidatePipeline stays the single source of truth; propositions is just the recruiter-facing view)
+    if (updates.step) {
+      const entry = updated.find(e => e.candidateId === candidateId);
+      const propId = entry?.propositionId;
+      if (propId) {
+        const propStatus = updates.step === 'rejected' ? 'rejected'
+          : updates.step === 'placed' ? 'accepted'
+          : updates.step !== 'linked' ? 'accepted'
+          : undefined;
+        if (propStatus) {
+          const propUpdate: any = { status: propStatus };
+          if (updates.step === 'rejected' && updates.rejectedReason) propUpdate.rejectReason = updates.rejectedReason;
+          updateDoc(doc(db, 'propositions', propId), propUpdate).catch(() => {});
+        }
+      }
+    }
   };
 
   // ── Remove entry ──
@@ -435,70 +575,152 @@ export default function MatchingPanel({ need, candidates, onLink, linkedIds = ne
     setPipeline(updated);
     await savePipeline(updated);
     await onLink(need.id, candidateId, linkMode);
+    notifyCandidate(candidateId, 'linked');
   };
 
-  // ── AI matching ──
+  // ── Score algorithmique (gratuit, instantané) ─────────────────
+  const computeAlgoScore = (c: Candidate): Omit<AIMatchResult, 'candidateId'> => {
+    const w = weights.algo;
+    let score = 0;
+    const reasons: string[] = [];
+    const concerns: string[] = [];
+
+    // Secteur
+    const cs = (c.sector || '').toLowerCase();
+    const ns = (need.sector || '').toLowerCase();
+    if (cs && ns && cs === ns) { score += w.sector; reasons.push("Secteur identique"); }
+    else if (cs && ns && (cs.includes(ns.slice(0,4)) || ns.includes(cs.slice(0,4)))) { score += w.sectorPartial; reasons.push("Secteur proche"); }
+    else if (ns) concerns.push("Secteur différent");
+
+    // Expérience
+    const expC = parseFloat(String(c.experience || 0)) || 0;
+    const expR = parseFloat(String(need.expRequired || 0)) || 0;
+    if (expR === 0) { score += w.experience; }
+    else if (expC >= expR) { score += w.experience; reasons.push(`${expC} ans exp. (min ${expR})`); }
+    else if (expC >= expR * w.experiencePartialRatio) { score += w.experiencePartial; concerns.push(`Exp. ${expC}/${expR} ans`); }
+    else concerns.push(`Exp. insuffisante (${expC}/${expR} ans)`);
+
+    // Disponibilité
+    const av = (c.availability || '').toLowerCase();
+    if (av.includes('imméd') || av.includes('immedi')) { score += w.availabilityImmediate; reasons.push("Disponible immédiatement"); }
+    else if (av.includes('1 mois')) score += w.availability1Month;
+    else if (av.includes('2 mois')) score += w.availability2Months;
+
+    // Formation
+    const edu = (c.education || '').toLowerCase();
+    if (edu.includes('master') || edu.includes('ingénieur') || edu.includes('licence') || edu.includes('bts')) { score += w.education; }
+    else if (edu.includes('bac') || edu.includes('cap') || edu.includes('bep')) { score += w.educationLower; }
+
+    // FIX #7 — Compétences (utilisées dans algo comme dans manuel)
+    const skillsMax = w.education; // on réutilise le même plafond de points que formation
+    if (need.skills && c.skills) {
+      const needSkills = need.skills.toLowerCase().split(',').map((s: string) => s.trim()).filter(Boolean);
+      const candSkills = (c.skills || '').toLowerCase();
+      const matched = needSkills.filter((s: string) => candSkills.includes(s));
+      if (matched.length > 0) {
+        const pts = Math.min(skillsMax, Math.round((matched.length / needSkills.length) * skillsMax));
+        score += pts;
+        reasons.push(`${matched.length}/${needSkills.length} compétence(s)`);
+      }
+    }
+
+    // FIX #6 — Normalisation : score ramené sur 100 en fonction du total max réel des poids
+    const maxPossible = w.sector + w.experience + w.availabilityImmediate + w.education + skillsMax;
+    const normalized = maxPossible > 0 ? Math.round((score / maxPossible) * 100) : 0;
+
+    const verdict = normalized >= 80 ? 'Excellent' : normalized >= 60 ? 'Bon' : normalized >= 40 ? 'Moyen' : 'Faible';
+    if (reasons.length === 0) reasons.push("Profil à évaluer");
+    return { score: normalized, verdict, reasons, concerns };
+  };
+
+  // ── AI matching avec Groq via /api/match (server-side, pas de CORS) ──
   const runAIMatching = async () => {
     if (!candidates.length) return;
     setAiLoading(true);
     setAiError(null);
     setAiResults([]);
 
-    const candidateSummaries = candidates.slice(0, 20).map(c => ({
-      id: c.id,
-      nom: c.fullName || c.displayName || 'Inconnu',
-      poste: c.jobTitle || 'N/A',
-      secteur: c.sector || 'N/A',
-      experience: c.experience ? `${c.experience} ans` : 'N/A',
-      disponibilite: c.availability || 'N/A',
-      competences: c.skills || 'N/A',
+    // ÉTAPE 1 — Score algo sur TOUS les candidats (FIX #8 : plus de slice(0,20))
+    const algoResults: AIMatchResult[] = candidates.map(c => ({
+      candidateId: c.id,
+      ...computeAlgoScore(c),
     }));
+    algoResults.sort((a, b) => b.score - a.score);
+    setAiResults(algoResults); // Affichage immédiat
 
-    const needSummary = {
-      poste: need.jobTitle || 'N/A',
-      secteur: need.sector || 'N/A',
-      contrat: need.needType || 'N/A',
-      experience_min: need.expRequired !== undefined ? `${need.expRequired} ans` : 'N/A',
-      competences: need.skills || 'N/A',
-      description: need.description ? need.description.slice(0, 300) : 'N/A',
-    };
+    // ÉTAPE 2 — Enrichissement Groq (top 15 pour Groq, sélection plus large qu'avant)
+    // FIX #8 : on pré-calcule un bonus compétences brut pour remonter les candidats
+    // avec compétences parfaites mais secteur différent, avant de couper pour Groq
+    const withSkillsBonus = [...algoResults].map(r => {
+      const c = candidates.find(x => x.id === r.candidateId)!;
+      let skillBonus = 0;
+      if (need.skills && c.skills) {
+        const needSkills = need.skills.toLowerCase().split(',').map((s: string) => s.trim()).filter(Boolean);
+        const candSkills = (c.skills || '').toLowerCase();
+        skillBonus = needSkills.filter((s: string) => candSkills.includes(s)).length;
+      }
+      return { ...r, _skillBonus: skillBonus };
+    });
+    // Tri composite : score algo + bonus compétences (pour ne pas exclure un candidat compétent)
+    withSkillsBonus.sort((a, b) => (b.score + b._skillBonus * 3) - (a.score + a._skillBonus * 3));
+    const top15 = withSkillsBonus.slice(0, 15).map(r => {
+      const c = candidates.find(x => x.id === r.candidateId)!;
+      return {
+        id: c.id,
+        nom: c.fullName || 'Inconnu',
+        secteur: c.sector || 'N/A',
+        experience: c.experience ? `${c.experience} ans` : 'N/A',
+        disponibilite: c.availability || 'N/A',
+        competences: c.skills || 'N/A',
+        score_algo: r.score,
+      };
+    });
+
+    const prompt = `Tu es expert RH. Offre : poste="${need.jobTitle}", secteur="${need.sector}", expMin=${need.expRequired || 0} ans, compétences="${need.skills || 'N/A'}".
+Candidats pré-scorés : ${JSON.stringify(top15)}
+Retourne UNIQUEMENT un tableau JSON : [{"candidateId":"...","score":0-100,"verdict":"Excellent|Bon|Moyen|Faible","reasons":["..."],"concerns":["..."]}]`;
 
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      // ✅ Appel via proxy serveur — clé GROQ jamais exposée au navigateur
+      const resp = await fetch('/api/groq', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1000,
-          messages: [{
-            role: 'user',
-            content: `Tu es un expert RH. Analyse la compatibilité entre cette offre et ces candidats.
-
-OFFRE :
-${JSON.stringify(needSummary, null, 2)}
-
-CANDIDATS :
-${JSON.stringify(candidateSummaries, null, 2)}
-
-Pour chaque candidat, retourne un objet JSON avec :
-- candidateId (string, exactement l'id fourni)
-- score (number 0-100)
-- verdict (string: "Excellent" | "Bon" | "Moyen" | "Faible")
-- reasons (array de 2-3 strings courtes)
-- concerns (array de 0-2 strings courtes)
-
-Réponds UNIQUEMENT avec un tableau JSON valide, sans commentaires ni backticks.`,
-          }],
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 1500,
+          temperature: 0.2,
         }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error?.message || 'Erreur API');
-      const raw = data.content.map((b: any) => b.text || '').join('');
-      const parsed: AIMatchResult[] = JSON.parse(raw.replace(/```json|```/g, '').trim());
-      parsed.sort((a, b) => b.score - a.score);
-      setAiResults(parsed);
+
+      if (!resp.ok) throw new Error(`Groq proxy erreur ${resp.status}`);
+      const groqData = await resp.json();
+      const text = groqData.choices?.[0]?.message?.content || '';
+      const error = null;
+      if (error) throw new Error(error);
+
+      const jsonMatch = text.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) throw new Error('Réponse IA invalide');
+      const groqResults: AIMatchResult[] = JSON.parse(jsonMatch[0]);
+      const groqMap = new Map(groqResults.map(r => [r.candidateId, r]));
+      const merged = algoResults.map(r => groqMap.get(r.candidateId) || r);
+      merged.sort((a, b) => b.score - a.score);
+      setAiResults(merged);
+
+      // Persist cache so re-opening this need doesn't re-spend a Groq call
+      const cachedAt = new Date().toISOString();
+      setAiCachedAt(cachedAt);
+      updateDoc(doc(db, 'needs', need.id), {
+        aiMatchingCache: { results: merged, cachedAt },
+      }).catch(() => {});
     } catch (err: any) {
-      setAiError(err.message || 'Erreur matching IA');
+      // Groq failed → keep algo results, show soft warning
+      setAiError(`IA indisponible — résultats algorithmiques affichés (${err.message})`);
+      // Still cache the algo-only results so the UI isn't empty next time
+      const cachedAt = new Date().toISOString();
+      setAiCachedAt(cachedAt);
+      updateDoc(doc(db, 'needs', need.id), {
+        aiMatchingCache: { results: algoResults, cachedAt },
+      }).catch(() => {});
     } finally {
       setAiLoading(false);
     }
@@ -506,48 +728,49 @@ Réponds UNIQUEMENT avec un tableau JSON valide, sans commentaires ni backticks.
 
   // ── Score de compatibilité manuel (algorithmique) ──
   const computeManualScore = (c: Candidate): { score: number; tags: string[] } => {
+    const w = weights.manual;
     let score = 0;
     const tags: string[] = [];
 
-    // Secteur (40 pts)
+    // Secteur
     if (need?.sector && c.sector && c.sector.toLowerCase() === need.sector.toLowerCase()) {
-      score += 40; tags.push('✓ Secteur');
+      score += w.sector; tags.push('✓ Secteur');
     } else if (need?.sector && c.sector) {
-      score += 5;
+      score += w.sectorOther;
     }
 
-    // Expérience (25 pts)
+    // Expérience
     const cExp = typeof c.experience === 'string' ? parseInt(c.experience) : (c.experience || 0);
     const nExp = need?.expRequired || 0;
     if (cExp >= nExp) {
-      score += 25; tags.push(`✓ ${cExp} ans exp.`);
-    } else if (cExp >= nExp - 2 && cExp > 0) {
-      score += 12; tags.push(`~ ${cExp} ans exp.`);
+      score += w.experience; tags.push(`✓ ${cExp} ans exp.`);
+    } else if (cExp >= nExp - w.experiencePartialGap && cExp > 0) {
+      score += w.experiencePartial; tags.push(`~ ${cExp} ans exp.`);
     }
 
-    // Disponibilité (15 pts)
+    // Disponibilité
     if (c.availability === 'Immédiate' || c.availability === 'immediate') {
-      score += 15; tags.push('✓ Dispo immédiate');
+      score += w.availabilityImmediate; tags.push('✓ Dispo immédiate');
     } else if (c.availability) {
-      score += 5; tags.push(`~ ${c.availability}`);
+      score += w.availabilityOther; tags.push(`~ ${c.availability}`);
     }
 
-    // Diplôme (10 pts)
+    // Diplôme
     if (need?.diplomaRequired && c.education) {
       if (c.education === need.diplomaRequired) {
-        score += 10; tags.push('✓ Diplôme');
-      } else score += 3;
+        score += w.diploma; tags.push('✓ Diplôme');
+      } else score += w.diplomaOther;
     } else if (!need?.diplomaRequired) {
-      score += 10;
+      score += w.diplomaNoneRequired;
     }
 
-    // Compétences (10 pts)
+    // Compétences
     if (need?.skills && c.skills) {
       const needSkills = need.skills.toLowerCase().split(',').map((s: string) => s.trim());
       const candSkills = c.skills.toLowerCase();
       const matched = needSkills.filter((s: string) => candSkills.includes(s));
       if (matched.length > 0) {
-        score += Math.min(10, matched.length * 4);
+        score += Math.min(w.skillsMax, matched.length * w.skillsPerMatch);
         tags.push(`✓ ${matched.length} compétence(s)`);
       }
     }
@@ -714,8 +937,11 @@ Réponds UNIQUEMENT avec un tableau JSON valide, sans commentaires ni backticks.
             {aiResults.length > 0 && (
               <div className="space-y-3">
                 <div className="flex items-center justify-between mb-2">
-                  <p className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400">{aiResults.length} profil(s) · classés par compatibilité</p>
-                  <button onClick={() => { setAiResults([]); setAiError(null); }} className="flex items-center gap-1 text-[10px] font-black text-gray-400 hover:text-gray-600 uppercase">
+                  <p className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400">
+                    {aiResults.length} profil(s) · classés par compatibilité
+                    {aiCachedAt && <span className="normal-case font-semibold text-gray-300"> · analysé le {new Date(aiCachedAt).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
+                  </p>
+                  <button onClick={() => { setAiResults([]); setAiError(null); setAiCachedAt(null); }} className="flex items-center gap-1 text-[10px] font-black text-gray-400 hover:text-gray-600 uppercase">
                     <RefreshCw size={10} /> Relancer
                   </button>
                 </div>

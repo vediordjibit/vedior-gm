@@ -1,134 +1,144 @@
-import * as functions from "firebase-functions";
-import * as admin from "firebase-admin";
+// functions/src/index.ts
+// Firebase Cloud Function — proxy Anthropic API
+// Fix CORS : autorise vediorgm.com + vediorgm.web.app + vediorgm.firebaseapp.com
+
+import * as functions from 'firebase-functions';
+import * as admin from 'firebase-admin';
 
 admin.initializeApp();
 
-/**
- * Cloud Function : createUser
- * 1. Crée le compte Firebase Auth (sans mot de passe connu)
- * 2. Crée le profil Firestore selon le rôle (admin / recruiter / candidate)
- * 3. Envoie automatiquement un email "Définir votre mot de passe" à l'utilisateur
- */
-export const createUser = functions.https.onCall(async (data, context) => {
+const ALLOWED_ORIGINS = [
+  'https://vediorgm.com',
+  'https://www.vediorgm.com',
+  'https://vediorgm.web.app',
+  'https://vediorgm.firebaseapp.com',
+  'http://localhost:3000',
+  'http://localhost:3001',
+];
 
-  // 1. Vérifier que l'appelant est connecté
-  if (!context.auth) {
-    throw new functions.https.HttpsError("unauthenticated", "Vous devez être connecté.");
-  }
+// ── Helper CORS headers ───────────────────────────────────────────────────────
+function setCorsHeaders(req: functions.https.Request, res: functions.Response) {
+  const origin = req.headers.origin as string;
+  const allowed = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
 
-  // 2. Vérifier que l'appelant est bien admin
-  const callerDoc = await admin.firestore().doc(`admins/${context.auth.uid}`).get();
-  if (!callerDoc.exists) {
-    throw new functions.https.HttpsError("permission-denied", "Accès réservé aux administrateurs.");
-  }
+  res.set('Access-Control-Allow-Origin', allowed);
+  res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.set('Access-Control-Max-Age', '3600');
+}
 
-  const {
-    email, displayName, role, phone, createdBy,
-    adminLevel,
-    companyName, contactName, rcNumber, website, sector,
-    fullName, whatsapp, nationality, education, experience,
-    availability, gender, candidateSector, address, languages,
-  } = data;
+// ── Anthropic Proxy ───────────────────────────────────────────────────────────
+export const anthropicProxy = functions
+  .region('us-central1')
+  .runWith({ timeoutSeconds: 60, memory: '256MB' })
+  .https.onRequest(async (req, res) => {
 
-  if (!email || !role) {
-    throw new functions.https.HttpsError("invalid-argument", "Email et rôle sont obligatoires.");
-  }
+    setCorsHeaders(req, res);
 
-  // 3. Créer le compte Firebase Auth avec un mot de passe aléatoire
-  //    L'utilisateur ne connaîtra jamais ce mot de passe — il recevra un lien par email.
-  const tempPassword = Math.random().toString(36).slice(-10) + "Aa1!";
-
-  let userRecord: admin.auth.UserRecord;
-  try {
-    userRecord = await admin.auth().createUser({
-      email,
-      password: tempPassword,
-      displayName: displayName || email,
-    });
-  } catch (err: any) {
-    if (err.code === "auth/email-already-exists") {
-      throw new functions.https.HttpsError("already-exists", "Un compte avec cet email existe déjà.");
+    // Preflight OPTIONS
+    if (req.method === 'OPTIONS') {
+      res.status(204).send('');
+      return;
     }
-    throw new functions.https.HttpsError("internal", `Erreur Auth : ${err.message}`);
-  }
 
-  const uid = userRecord.uid;
-  const db = admin.firestore();
+    if (req.method !== 'POST') {
+      res.status(405).json({ error: 'Method not allowed' });
+      return;
+    }
 
-  const base = {
-    uid,
-    email,
-    displayName: displayName || email,
-    role,
-    phone: phone || "",
-    status: "active",
-    createdBy: createdBy || "admin",
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  };
+    try {
+      const apiKey = process.env.ANTHROPIC_API_KEY
+        || functions.config().anthropic?.key
+        || functions.config().anthropic?.api_key;
 
-  // 4. Créer le profil Firestore selon le rôle
-  if (role === "admin") {
-    await db.doc(`admins/${uid}`).set({ ...base, adminLevel: adminLevel || "admin" });
-  } else if (role === "recruiter") {
-    await db.collection("recruiters").doc(uid).set({
-      ...base, companyName: companyName || "", contactName: contactName || "",
-      rcNumber: rcNumber || "", website: website || "", sector: sector || "btp",
-    });
-  } else {
-    await db.collection("candidates").doc(uid).set({
-      ...base, fullName: fullName || displayName || "", whatsapp: whatsapp || "",
-      nationality: nationality || "", education: education || "", experience: experience || "",
-      availability: availability || "immediate", gender: gender || "M",
-      sector: candidateSector || "btp", address: address || "", languages: languages || "",
-    });
-  }
+      if (!apiKey) {
+        res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
+        return;
+      }
 
-  // 5. Entrée unifiée dans "users"
-  await db.collection("users").doc(uid).set({
-    ...base,
-    ...(role === "admin"     && { adminLevel: adminLevel || "admin" }),
-    ...(role === "recruiter" && { companyName, contactName, sector }),
-    ...(role === "candidate" && { fullName, sector: candidateSector }),
+      const body = req.body;
+
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(body),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        res.status(response.status).json(data);
+        return;
+      }
+
+      res.status(200).json(data);
+
+    } catch (error: any) {
+      console.error('Proxy error:', error);
+      res.status(500).json({ error: error.message || 'Internal server error' });
+    }
   });
 
-  // 6. Envoyer l'email "Définir votre mot de passe"
-  //    Firebase génère un lien sécurisé valable 1h.
-  try {
-    await admin.auth().generatePasswordResetLink(email, {
-      url: "https://vediorgm.firebaseapp.com", // ← Remplacez par votre URL de production
-      handleCodeInApp: false,
-    });
-    functions.logger.info(`Email de réinitialisation envoyé à ${email}`);
-  } catch (emailErr: any) {
-    functions.logger.error(`Erreur envoi email à ${email}:`, emailErr.message);
-  }
 
-  return { uid, success: true, message: `Compte créé. Email envoyé à ${email}.` };
-});
+// ── Groq Proxy (optionnel — même pattern) ────────────────────────────────────
+export const groqProxy = functions
+  .region('us-central1')
+  .runWith({ timeoutSeconds: 60, memory: '256MB' })
+  .https.onRequest(async (req, res) => {
 
+    setCorsHeaders(req, res);
 
-/**
- * Cloud Function : sendPasswordResetEmail
- * Permet à l'admin de renvoyer un email "Définir le mot de passe" à tout moment.
- */
-export const sendPasswordResetEmail = functions.https.onCall(async (data, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError("unauthenticated", "Non autorisé.");
-  }
-  const callerDoc = await admin.firestore().doc(`admins/${context.auth.uid}`).get();
-  if (!callerDoc.exists) {
-    throw new functions.https.HttpsError("permission-denied", "Accès réservé aux administrateurs.");
-  }
-  const { email } = data;
-  if (!email) throw new functions.https.HttpsError("invalid-argument", "Email manquant.");
+    if (req.method === 'OPTIONS') {
+      res.status(204).send('');
+      return;
+    }
 
-  try {
-    await admin.auth().generatePasswordResetLink(email, {
-      url: "https://vediorgm.firebaseapp.com",
-      handleCodeInApp: false,
-    });
-    return { success: true, message: `Email envoyé à ${email}` };
-  } catch (err: any) {
-    throw new functions.https.HttpsError("internal", `Erreur : ${err.message}`);
-  }
-});
+    if (req.method !== 'POST') {
+      res.status(405).json({ error: 'Method not allowed' });
+      return;
+    }
+
+    try {
+      const apiKey = process.env.GROQ_API_KEY
+        || functions.config().groq?.key
+        || functions.config().groq?.api_key;
+
+      if (!apiKey) {
+        res.status(500).json({ error: 'GROQ_API_KEY not configured' });
+        return;
+      }
+
+      const body = req.body;
+
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: body.model || 'llama-3.3-70b-versatile',
+          max_tokens: body.max_tokens || 1500,
+          temperature: body.temperature || 0.2,
+          messages: body.messages,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        res.status(response.status).json(data);
+        return;
+      }
+
+      res.status(200).json(data);
+
+    } catch (error: any) {
+      console.error('Groq proxy error:', error);
+      res.status(500).json({ error: error.message || 'Internal server error' });
+    }
+  });

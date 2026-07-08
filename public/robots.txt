@@ -1,0 +1,7 @@
+# robots.txt — vediorgm.com
+User-agent: *
+Allow: /
+Disallow: /admin/
+Disallow: /api/
+
+Sitemap: https://vediorgm.com/sitemap.xml

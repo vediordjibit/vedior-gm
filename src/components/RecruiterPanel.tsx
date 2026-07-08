@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Building2, Plus, Clock, CheckCircle2, LogOut, Bell, Search,
+  Building2, Plus, Clock, CheckCircle2, LogOut, Bell, Search, RefreshCw,
   LayoutDashboard, FileText, User, AlertCircle, MessageSquare,
   BarChart3, Settings, X, ChevronRight, ChevronLeft, MoreVertical,
-  Users, Briefcase, MapPin, Shield, Save, Languages, Mail, Phone
+  Users, Briefcase, MapPin, Shield, Save, Languages, Mail, Phone, CreditCard
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -11,7 +11,10 @@ import {
   AreaChart, Area
 } from 'recharts';
 import { auth, db } from '../lib/firebase';
+import RecruiterPricing from './RecruiterPricing';
+import MatchingPanel from './MatchingPanel';
 import { useTranslation } from '../lib/i18n';
+import { useCompanyInfo } from '../lib/useCompanyInfo';
 import { 
   collection, query, where, orderBy, onSnapshot, addDoc, updateDoc,
   serverTimestamp, doc, getDocs, setDoc, getDoc
@@ -101,26 +104,32 @@ const JOBS_BY_SECTOR: Record<string, string[]> = {
 
 export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
   const { lang, setLang, t, dir } = useTranslation();
+  const { company } = useCompanyInfo(db);
 
   const [user, setUser] = useState(auth.currentUser);
   const [authLoading, setAuthLoading] = useState(!auth.currentUser);
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [recruiterProfile, setRecruiterProfile] = useState<any>(null);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(1);
   const [savingOnboarding, setSavingOnboarding] = useState(false);
   const [needs, setNeeds] = useState<any[]>([]);
   const [propositions, setPropositions] = useState<any[]>([]);
+  const [candidates, setCandidates] = useState<any[]>([]);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [showNotifPanel, setShowNotifPanel] = useState(false);
   const [selectedNeed, setSelectedNeed] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   
   const stats = {
     pending: needs.filter(n => n.status === 'new').length,
-    processed: needs.filter(n => n.status === 'processed').length,
+    validated: needs.filter(n => n.status === 'validated' || n.status === 'matching').length,
     total: needs.length,
     rejected: needs.filter(n => n.status === 'rejected').length
   };
 
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'needs' | 'propositions' | 'candidates' | 'stats' | 'messages' | 'settings'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'needs' | 'propositions' | 'pricing' | 'candidates' | 'stats' | 'messages' | 'settings'>('dashboard');
   const [formattedDate, setFormattedDate] = useState('');
   const [needsPage, setNeedsPage] = useState(1);
   const [needsPerPage, setNeedsPerPage] = useState(10);
@@ -240,6 +249,8 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
             // New user with no recruiter doc yet — trigger onboarding
             setNeedsOnboarding(true);
           }
+          // Profil résolu (trouvé ou non) — on peut maintenant choisir le bon écran
+          setProfileLoading(false);
         });
         // Load messages
         const qMsg = query(
@@ -250,6 +261,9 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
         onSnapshot(qMsg, (snap) => {
           setMessages(snap.docs.map(d => ({ id: d.id, ...d.data() })));
         });
+      } else {
+        // Pas connecté → rien à charger côté profil recruteur
+        setProfileLoading(false);
       }
     });
     return () => unsubscribeAuth();
@@ -292,6 +306,31 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
     });
 
     return () => { unsubscribe(); unsubProps(); };
+  }, [user]);
+
+  // ── Candidate base — only loaded for Pro recruiters with an active plan,
+  // since matching/full candidate access is a paid feature (see RecruiterPricing).
+  const isProActive = recruiterProfile?.plan === 'pro' && recruiterProfile?.planStatus === 'active';
+  useEffect(() => {
+    if (!user || !isProActive) { setCandidates([]); return; }
+    const qUsers = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
+    const unsubUsers = onSnapshot(qUsers, (snap) => {
+      setCandidates(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, (err) => console.error('Candidates listen error:', err));
+    return () => unsubUsers();
+  }, [user, isProActive]);
+
+  useEffect(() => {
+    if (!user) return;
+    const qNotifs = query(
+      collection(db, 'notifications'),
+      where('userId', '==', user.uid),
+      orderBy('createdAt', 'desc')
+    );
+    const unsubNotifs = onSnapshot(qNotifs, (snap) => {
+      setNotifications(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, (err) => console.error('Notif listen error:', err));
+    return () => unsubNotifs();
   }, [user]);
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -395,6 +434,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
         companyName: recruiterProfile?.companyName || '',
         text: messageText.trim(),
         sender: 'recruiter',
+        type: 'general',
         createdAt: serverTimestamp(),
         read: false
       });
@@ -403,6 +443,45 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
       console.error('Message error:', err);
     } finally {
       setSendingMessage(false);
+    }
+  };
+
+  // ── Demande de modification d'un besoin verrouillé ──
+  const [showModifRequest, setShowModifRequest] = React.useState(false);
+  const [modifNeed, setModifNeed]               = React.useState<any>(null);
+  const [modifText, setModifText]               = React.useState('');
+  const [sendingModif, setSendingModif]         = React.useState(false);
+  const [modifSent, setModifSent]               = React.useState(false);
+
+  const handleSendModifRequest = async () => {
+    if (!user || !modifText.trim() || !modifNeed) return;
+    setSendingModif(true);
+    try {
+      await addDoc(collection(db, 'messages'), {
+        userId:      user.uid,
+        userEmail:   user.email,
+        companyName: recruiterProfile?.companyName || '',
+        sender:      'recruiter',
+        type:        'modification_request',
+        needId:      modifNeed.id,
+        needTitle:   modifNeed.jobTitle,
+        needSector:  modifNeed.sector,
+        text:        modifText.trim(),
+        status:      'pending',
+        createdAt:   serverTimestamp(),
+        read:        false,
+      });
+      setModifSent(true);
+      setModifText('');
+      setTimeout(() => {
+        setShowModifRequest(false);
+        setModifSent(false);
+        setModifNeed(null);
+      }, 2000);
+    } catch (err) {
+      console.error('Modif request error:', err);
+    } finally {
+      setSendingModif(false);
     }
   };
 
@@ -521,7 +600,8 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
   };
 
   // BUG 8 FIX: Show loading while Firebase resolves
-  if (authLoading) {
+  // + attendre le chargement du profil recruteur (évite le flash dashboard → pending)
+  if (authLoading || (user && profileLoading)) {
     return (
       <div style={{ position: 'fixed', inset: 0, backgroundColor: '#050E1A', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
         <div style={{ textAlign: 'center' }}>
@@ -616,7 +696,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
           <p style={{ color: 'rgba(255,255,255,0.45)', fontSize: 14, lineHeight: 1.7, maxWidth: 380, margin: '0 auto 32px' }}>
             Votre demande d'accès recruteur a été refusée. Contactez notre équipe pour plus d'informations.
           </p>
-          <a href="mailto:contact@vedior-gm.com"
+          <a href={`mailto:${company.email}`}
             style={{ display: 'inline-block', background: 'linear-gradient(135deg, #00A3E0, #0057A8)', color: '#fff', padding: '14px 28px', borderRadius: 12, fontWeight: 900, fontSize: 12, textTransform: 'uppercase', letterSpacing: '1.5px', textDecoration: 'none', marginBottom: 16 }}>
             📧 Contacter l'équipe
           </a>
@@ -714,29 +794,46 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
 
     const inputStyle: React.CSSProperties = {
       width: '100%', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(0,163,224,0.2)',
-      color: W, padding: '16px 20px 16px 48px', borderRadius: 14, outline: 'none',
+      color: W, padding: '17px 20px 17px 48px', borderRadius: 14, outline: 'none',
       fontSize: 15, fontWeight: 500, boxSizing: 'border-box', transition: 'border 0.2s',
+      minHeight: 54,
     };
     const labelStyle: React.CSSProperties = {
       fontSize: 11, fontWeight: 800, color: 'rgba(255,255,255,0.5)',
-      textTransform: 'uppercase', letterSpacing: '1.5px', display: 'block', marginBottom: 8,
+      textTransform: 'uppercase', letterSpacing: '1.5px', display: 'block', marginBottom: 10,
     };
 
     return (
-      <div style={{ position: 'fixed', inset: 0, background: N, zIndex: 200, overflow: 'hidden', fontFamily: 'system-ui, sans-serif' }}>
+      <div style={{ position: 'fixed', inset: 0, background: N, zIndex: 200, overflowY: 'auto', overflowX: 'hidden', fontFamily: 'system-ui, sans-serif' }}>
 
         {/* Animated background grid */}
         <div style={{ position: 'absolute', inset: 0, backgroundImage: 'linear-gradient(rgba(0,163,224,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(0,163,224,0.04) 1px, transparent 1px)', backgroundSize: '50px 50px', pointerEvents: 'none' }} />
 
         {/* Glowing blobs */}
-        <div style={{ position: 'absolute', top: '-20%', left: '-10%', width: 700, height: 700, background: 'radial-gradient(circle, rgba(0,163,224,0.15), transparent 70%)', pointerEvents: 'none' }} />
-        <div style={{ position: 'absolute', bottom: '-20%', right: '-10%', width: 600, height: 600, background: 'radial-gradient(circle, rgba(0,87,168,0.2), transparent 70%)', pointerEvents: 'none' }} />
-        <div style={{ position: 'absolute', top: '40%', left: '35%', width: 400, height: 400, background: 'radial-gradient(circle, rgba(0,163,224,0.06), transparent 70%)', pointerEvents: 'none' }} />
+        <div style={{ position: 'absolute', top: '-20%', left: '-10%', width: '50vw', maxWidth: 700, height: 700, background: 'radial-gradient(circle, rgba(0,163,224,0.15), transparent 70%)', pointerEvents: 'none' }} />
+        <div style={{ position: 'absolute', bottom: '-20%', right: '-10%', width: '50vw', maxWidth: 600, height: 600, background: 'radial-gradient(circle, rgba(0,87,168,0.2), transparent 70%)', pointerEvents: 'none' }} />
+        <div style={{ position: 'absolute', top: '40%', left: '35%', width: '30vw', maxWidth: 400, height: 400, background: 'radial-gradient(circle, rgba(0,163,224,0.06), transparent 70%)', pointerEvents: 'none' }} />
 
-        <div style={{ position: 'relative', zIndex: 1, minHeight: '100vh', display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
+        <style>{`
+          @media (max-width: 900px) {
+            .vgm-login-grid { grid-template-columns: 1fr !important; min-height: auto !important; overflow-x: hidden !important; max-width: 100vw !important; }
+            .vgm-login-left { display: none !important; }
+            .vgm-login-right { padding: 24px 16px !important; align-items: flex-start !important; min-height: 100vh; width: 100% !important; max-width: 100vw !important; box-sizing: border-box !important; }
+            .vgm-auth-card { padding: 32px 24px !important; border-radius: 24px !important; }
+            .vgm-register-grid { grid-template-columns: 1fr !important; gap: 18px !important; }
+            .vgm-auth-title { font-size: 22px !important; }
+          }
+          @media (max-width: 420px) {
+            .vgm-login-right { padding: 16px 10px !important; }
+            .vgm-auth-card { padding: 28px 18px !important; border-radius: 20px !important; }
+            .vgm-auth-title { font-size: 20px !important; }
+            .vgm-auth-subtitle { font-size: 13px !important; }
+          }
+        `}</style>
+        <div className="vgm-login-grid" style={{ position: 'relative', zIndex: 1, minHeight: '100vh', display: 'grid', gridTemplateColumns: '1fr 1fr', overflowX: 'hidden', maxWidth: '100vw' }}>
 
           {/* ══ LEFT PANEL ══ */}
-          <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '64px 72px' }}>
+          <div className="vgm-login-left" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '48px 64px' }}>
 
             {/* Logo big */}
             <div style={{ marginBottom: 52 }}>
@@ -801,18 +898,18 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
 
             {/* Footer */}
             <div style={{ marginTop: 'auto', paddingTop: 40, color: 'rgba(255,255,255,0.2)', fontSize: 12 }}>
-              © 2026 Vedior GM — Plateforme de recrutement à Djibouti
+              {company.copyright} — {company.tagline}
             </div>
           </div>
 
           {/* ══ RIGHT PANEL — CARD ══ */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 60px' }}>
-            <div style={{
+          <div className="vgm-login-right" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '32px 48px' }}>
+            <div className="vgm-auth-card" style={{
               background: 'rgba(255,255,255,0.04)', backdropFilter: 'blur(32px)',
               border: '1px solid rgba(0,163,224,0.15)', borderRadius: 28,
               padding: '52px 52px', width: '100%', maxWidth: 560,
               boxShadow: '0 0 80px rgba(0,163,224,0.08), 0 40px 100px rgba(0,0,0,0.6)',
-              position: 'relative', overflow: 'hidden'
+              position: 'relative', overflow: 'hidden', boxSizing: 'border-box'
             }}>
               {/* Top glow line */}
               <div style={{ position: 'absolute', top: 0, left: '10%', right: '10%', height: 1, background: `linear-gradient(90deg, transparent, ${O}, transparent)`, borderRadius: 1 }} />
@@ -821,15 +918,15 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
 
               {/* Card header */}
               <div style={{ textAlign: 'center', marginBottom: 36 }}>
-                <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 20 }}>
                   <Logo inverted size="lg" />
                 </div>
-                <h2 style={{ fontSize: 26, fontWeight: 900, color: W, letterSpacing: '-0.5px', marginBottom: 8 }}>
+                <h2 className="vgm-auth-title" style={{ fontSize: 26, fontWeight: 900, color: W, letterSpacing: '-0.5px', marginBottom: 10, lineHeight: 1.3 }}>
                   ESPACE <span style={{ color: O }}>
                     {authMode === 'login' ? 'RECRUTEUR' : authMode === 'register' ? 'INSCRIPTION' : 'RESET'}
                   </span>
                 </h2>
-                <p style={{ fontSize: 14, color: 'rgba(255,255,255,0.45)', lineHeight: 1.6 }}>
+                <p className="vgm-auth-subtitle" style={{ fontSize: 14, color: 'rgba(255,255,255,0.45)', lineHeight: 1.6, padding: '0 8px' }}>
                   {authMode === 'login' ? 'Connectez-vous avec vos identifiants professionnels' :
                    authMode === 'register' ? 'Votre compte sera validé par un administrateur' :
                    'Entrez votre email pour recevoir le lien de réinitialisation'}
@@ -859,7 +956,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                       <label style={{ ...labelStyle, marginBottom: 0 }}>Mot de passe</label>
-                      <button type="button" onClick={() => { setAuthMode('reset'); setAuthError(''); }}
+                      <button type="button" onClick={() => { setAuthMode('reset'); setAuthError(''); setAuthPassword(''); setAuthConfirmPassword(''); }}
                         style={{ background: 'none', border: 'none', color: O, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
                         Mot de passe oublié ?
                       </button>
@@ -910,7 +1007,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                     <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.08)' }} />
                   </div>
 
-                  <button type="button" onClick={() => { setAuthMode('register'); setAuthError(''); }}
+                  <button type="button" onClick={() => { setAuthMode('register'); setAuthError(''); setAuthEmail(''); setAuthPassword(''); setAuthConfirmPassword(''); }}
                     style={{ width: '100%', background: 'transparent', border: '1px solid rgba(0,163,224,0.3)', color: O, padding: '14px', borderRadius: 14, fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, transition: 'all 0.2s' }}>
                     Créer un compte recruteur <span style={{ fontSize: 16 }}>👤</span>
                   </button>
@@ -919,8 +1016,8 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
 
               {/* ── REGISTER FORM ── */}
               {authMode === 'register' && (
-                <form onSubmit={handleRegister} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                <form onSubmit={handleRegister} style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                  <div className="vgm-register-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
                     <div style={{ gridColumn: '1 / -1' }}>
                       <label style={labelStyle}>Société *</label>
                       <div style={{ position: 'relative' }}>
@@ -946,14 +1043,16 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                       <label style={labelStyle}>Email professionnel *</label>
                       <div style={{ position: 'relative' }}>
                         <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 18 }}>✉</span>
-                        <input type="email" required value={authEmail} onChange={e => setAuthEmail(e.target.value)} placeholder="vous@entreprise.com" style={inputStyle} />
+                        <input type="email" required value={authEmail} onChange={e => setAuthEmail(e.target.value)} placeholder="vous@entreprise.com" style={inputStyle}
+                          autoComplete="new-email" name="register-email" />
                       </div>
                     </div>
                     <div>
                       <label style={labelStyle}>Mot de passe *</label>
                       <div style={{ position: 'relative' }}>
                         <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 18 }}>🔒</span>
-                        <input type={showPassword ? 'text' : 'password'} required value={authPassword} onChange={e => setAuthPassword(e.target.value)} placeholder="••••••••" style={inputStyle} />
+                        <input type={showPassword ? 'text' : 'password'} required value={authPassword} onChange={e => setAuthPassword(e.target.value)} placeholder="••••••••" style={inputStyle}
+                          autoComplete="new-password" name="register-password" />
                         <button type="button" onClick={() => setShowPassword(p => !p)}
                           style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)', cursor: 'pointer' }}>
                           {showPassword ? '🙈' : '👁'}
@@ -965,6 +1064,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                       <div style={{ position: 'relative' }}>
                         <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 18 }}>🔒</span>
                         <input type={showPassword ? 'text' : 'password'} required value={authConfirmPassword} onChange={e => setAuthConfirmPassword(e.target.value)} placeholder="••••••••"
+                          autoComplete="new-password" name="register-password-confirm"
                           style={{ ...inputStyle, borderColor: authConfirmPassword && authConfirmPassword !== authPassword ? 'rgba(239,68,68,0.6)' : authConfirmPassword && authConfirmPassword === authPassword ? 'rgba(34,197,94,0.6)' : 'rgba(0,163,224,0.2)' }} />
                         {authConfirmPassword && (
                           <span style={{ position: 'absolute', right: 14, top: '50%', transform: 'translateY(-50%)', fontSize: 16 }}>
@@ -973,7 +1073,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                         )}
                       </div>
                     </div>
-                    <div>
+                    <div style={{ gridColumn: '1 / -1' }}>
                       <label style={labelStyle}>Secteur *</label>
                       <div style={{ position: 'relative' }}>
                         <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 18 }}>🏭</span>
@@ -990,11 +1090,11 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                     </div>
                   </div>
                   <button type="submit" disabled={authLoading}
-                    style={{ width: '100%', background: `linear-gradient(135deg, ${O}, #0057A8)`, color: W, padding: '17px', borderRadius: 14, fontWeight: 900, fontSize: 13, textTransform: 'uppercase', letterSpacing: '1.5px', border: 'none', cursor: 'pointer', marginTop: 4, opacity: authLoading ? 0.6 : 1, boxShadow: `0 8px 32px rgba(0,163,224,0.3)` }}>
+                    style={{ width: '100%', background: `linear-gradient(135deg, ${O}, #0057A8)`, color: W, padding: '18px', borderRadius: 14, fontWeight: 900, fontSize: 13, textTransform: 'uppercase', letterSpacing: '1.5px', border: 'none', cursor: 'pointer', marginTop: 8, opacity: authLoading ? 0.6 : 1, boxShadow: `0 8px 32px rgba(0,163,224,0.3)` }}>
                     {authLoading ? 'Création...' : 'Créer mon compte →'}
                   </button>
-                  <button type="button" onClick={() => { setAuthMode('login'); setAuthError(''); }}
-                    style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)', fontSize: 12, fontWeight: 700, cursor: 'pointer', textAlign: 'center' }}>
+                  <button type="button" onClick={() => { setAuthMode('login'); setAuthError(''); setAuthEmail(''); setAuthPassword(''); setAuthConfirmPassword(''); }}
+                    style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)', fontSize: 13, fontWeight: 700, cursor: 'pointer', textAlign: 'center', padding: '8px 0' }}>
                     ← Déjà un compte ? Se connecter
                   </button>
                 </form>
@@ -1020,7 +1120,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                       {authLoading ? 'Envoi...' : 'Envoyer le lien →'}
                     </button>
                   )}
-                  <button type="button" onClick={() => { setAuthMode('login'); setAuthError(''); setResetSent(false); }}
+                  <button type="button" onClick={() => { setAuthMode('login'); setAuthError(''); setResetSent(false); setAuthEmail(''); setAuthPassword(''); setAuthConfirmPassword(''); }}
                     style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)', fontSize: 12, fontWeight: 700, cursor: 'pointer', textAlign: 'center' }}>
                     ← Retour à la connexion
                   </button>
@@ -1043,18 +1143,26 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
   }
 
   return (
-    <div dir={dir} className="fixed inset-0 bg-gray-50 z-[200] flex overflow-hidden font-sans">
+    <div dir={dir} className="h-screen w-full bg-[#F0F2F8] text-[#111827] z-[200] flex overflow-hidden font-sans relative">
       {/* Sidebar */}
-      <aside className="w-64 bg-gray-900 text-white flex flex-col p-6 overflow-hidden">
-        <div className="flex items-center gap-3 mb-10 cursor-pointer" onClick={onBack}>
-          <Logo inverted />
+      <aside className={`${sidebarOpen ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0 fixed lg:relative z-50 w-[240px] min-w-[240px] bg-[#12152B] text-white flex flex-col overflow-hidden shrink-0 h-full transition-transform duration-300`}>
+        <div className="px-5 pt-6 pb-5 border-b border-white/[0.06] cursor-pointer" onClick={onBack}>
+          <div className="flex items-center gap-3">
+            <div className="w-[34px] h-[34px] rounded-[9px] bg-[#4F6EF7] flex items-center justify-center shrink-0">
+              <Building2 size={18} />
+            </div>
+            <Logo inverted />
+          </div>
+          <span className="text-[10px] text-[#4F6EF7] font-semibold uppercase tracking-[0.12em] block mt-2">RH Platform</span>
         </div>
 
-        <nav className="flex-1 space-y-2">
+        <nav className="flex-1 px-3 py-5 overflow-y-auto">
+          <p className="px-2 mb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-white/25">Principal</p>
           <NavItem icon={LayoutDashboard} label={t.admin.dashboard} active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
           <NavItem icon={Briefcase} label={t.admin.needs} active={activeTab === 'needs'} onClick={() => setActiveTab('needs')} />
           <div className="relative">
             <NavItem icon={Users} label="Profils proposés" active={activeTab === 'propositions'} onClick={() => setActiveTab('propositions')} />
+          <NavItem icon={CreditCard} label="Abonnement" active={activeTab === 'pricing'} onClick={() => setActiveTab('pricing')} />
             {propositions.filter(p => p.status === 'pending').length > 0 && (
               <span className="absolute top-2 right-3 w-5 h-5 bg-orange text-white text-[9px] font-black rounded-full flex items-center justify-center">
                 {propositions.filter(p => p.status === 'pending').length}
@@ -1062,73 +1170,155 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
             )}
           </div>
           {/* L'onglet Candidats n'apparaît plus dans la sidebar */}
+          <p className="px-2 mt-5 mb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-white/25">Outils</p>
           <NavItem icon={BarChart3} label={t.admin.detailedStats} active={activeTab === 'stats'} onClick={() => setActiveTab('stats')} />
           <NavItem icon={MessageSquare} label={t.admin.centralizedMessaging} active={activeTab === 'messages'} onClick={() => setActiveTab('messages')} />
           <NavItem icon={Settings} label={t.admin.settings} active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
         </nav>
 
-        <button onClick={logout} className="mt-auto flex items-center gap-3 px-4 py-3 text-white/50 font-bold text-sm hover:text-white transition-all group">
-          <LogOut size={18} className="group-hover:-translate-x-1 transition-transform" /> {t.admin.logout}
-        </button>
+        <div className="mt-auto p-3 border-t border-white/[0.06]">
+          <div className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-[#1E2240] transition-colors">
+            <div className="w-[34px] h-[34px] rounded-full overflow-hidden bg-gradient-to-br from-[#667eea] to-[#764ba2] flex items-center justify-center text-xs font-bold text-white shrink-0">
+              {user.photoURL ? <img src={user.photoURL} alt="profile" referrerPolicy="no-referrer" /> : <User size={16} />}
+            </div>
+            <div className="overflow-hidden flex-1 min-w-0">
+              <p className="text-[12.5px] font-semibold truncate">{recruiterProfile?.contactName || user.displayName || user.email?.split('@')[0] || 'Recruteur'}</p>
+              <p className="text-[11px] text-white/60 truncate">{recruiterProfile?.companyName || t.admin.proRecruiter}</p>
+            </div>
+          </div>
+          <button onClick={logout} className="mt-3 w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-red-500/10 text-red-300 font-semibold text-[10px] uppercase hover:bg-red-500/20 transition-all">
+            <LogOut size={12} /> {t.admin.logout}
+          </button>
+        </div>
       </aside>
+
+      {/* Mobile overlay */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 bg-black/50 z-40 lg:hidden" onClick={() => setSidebarOpen(false)} />
+      )}
 
       {/* Main Container */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header */}
-        <header className="h-20 bg-[#F8FAFC] border-b border-gray-100 flex items-center justify-between px-10 shrink-0">
-          <div className="relative w-96">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+        <header className="h-[60px] bg-white border-b border-[#E5E7EB] flex items-center gap-2 px-3 sm:px-7 shrink-0">
+          <button onClick={() => setSidebarOpen(o => !o)} className="lg:hidden flex items-center justify-center w-9 h-9 rounded-lg border border-[#E5E7EB] text-[#6B7280] hover:bg-gray-50 shrink-0">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          </button>
+          <div>
+            <h1 className="text-base font-bold tracking-[-0.3px] text-[#111827]">{activeTab === 'dashboard' ? t.admin.dashboard : t.admin.proRecruiter}</h1>
+            <p className="text-[13px] text-[#6B7280]">{formattedDate}</p>
+          </div>
+
+          <div className="flex-1" />
+
+          <div className="relative w-[220px] hidden sm:block">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#9CA3AF]" size={15} />
             <input 
               type="text" 
               placeholder={t.admin.searchAll}
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              className="w-full bg-[#F3F4F6] border-none rounded-2xl py-3 pl-12 pr-4 text-sm font-medium focus:ring-2 focus:ring-orange/20 outline-none"
+              className="w-full h-9 bg-[#F0F2F8] border border-[#E5E7EB] rounded-lg py-2 pl-9 pr-3 text-[13px] font-medium focus:ring-2 focus:ring-[#4F6EF7]/15 focus:border-[#4F6EF7] outline-none placeholder:text-[#9CA3AF]"
             />
           </div>
           
-          <div className="flex items-center gap-6">
-            <div className="flex items-center gap-2 text-gray-400 font-bold text-sm bg-gray-50 px-3 py-1.5 rounded-xl">
-              <Clock size={16} /> {formattedDate}
-            </div>
-            <button className="relative w-10 h-10 flex items-center justify-center text-gray-400 hover:text-gray-900 transition-colors">
-              <Bell size={22} />
-              <div className="absolute top-2 right-2 w-4 h-4 bg-gray-900 text-white text-[10px] font-black rounded-full border-2 border-white flex items-center justify-center">2</div>
-            </button>
-            <div className="flex items-center gap-3 border-l border-gray-100 pl-6 cursor-pointer group">
-              <div className="text-right">
-                <p className="text-sm font-black text-gray-900">{user.displayName || 'Recruteur'}</p>
-                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">{t.admin.proRecruiter}</p>
-              </div>
-              <div className="w-10 h-10 rounded-full border-2 border-white bg-gray-200 overflow-hidden shadow-sm group-hover:scale-105 transition-transform">
-                {user.photoURL ? <img src={user.photoURL} alt="profile" referrerPolicy="no-referrer" /> : <div className="w-full h-full flex items-center justify-center text-gray-900 bg-gray-100"><User size={20} /></div>}
-              </div>
-            </div>
-          </div>
+          <button className="w-9 h-9 rounded-lg border border-[#E5E7EB] bg-white flex items-center justify-center text-[#6B7280] hover:border-[#4F6EF7] hover:text-[#4F6EF7] transition-colors">
+            <MessageSquare size={16} />
+          </button>
+          <button onClick={() => setShowNotifPanel(v => !v)} className="relative w-9 h-9 rounded-lg border border-[#E5E7EB] bg-white flex items-center justify-center text-[#6B7280] hover:border-[#4F6EF7] hover:text-[#4F6EF7] transition-colors">
+            <Bell size={16} />
+            {notifications.filter(n => !n.read).length > 0 && (
+              <span className="absolute top-1.5 right-1.5 w-[7px] h-[7px] rounded-full bg-[#EF4444] border-2 border-white" />
+            )}
+          </button>
+
+          <AnimatePresence>
+            {showNotifPanel && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowNotifPanel(false)} />
+                <motion.div
+                  initial={{ opacity: 0, y: -8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  className="absolute right-3 sm:right-7 top-14 w-[90vw] max-w-sm bg-white rounded-2xl border border-[#E5E7EB] shadow-xl z-50 overflow-hidden"
+                >
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-[#E5E7EB]">
+                    <p className="text-sm font-black text-[#111827]">Notifications</p>
+                    {notifications.some(n => !n.read) && (
+                      <button
+                        onClick={async () => {
+                          const unread = notifications.filter(n => !n.read);
+                          await Promise.all(unread.map(n => updateDoc(doc(db, 'notifications', n.id), { read: true }).catch(() => {})));
+                        }}
+                        className="text-[10px] font-bold text-[#4F6EF7] uppercase hover:underline"
+                      >
+                        Tout marquer lu
+                      </button>
+                    )}
+                  </div>
+                  <div className="max-h-96 overflow-y-auto">
+                    {notifications.length === 0 ? (
+                      <div className="py-10 text-center text-gray-300">
+                        <Bell size={28} strokeWidth={1.5} className="mx-auto mb-2" />
+                        <p className="text-xs font-bold">Aucune notification</p>
+                      </div>
+                    ) : (
+                      notifications.slice(0, 20).map(n => (
+                        <button
+                          key={n.id}
+                          onClick={async () => {
+                            if (!n.read) await updateDoc(doc(db, 'notifications', n.id), { read: true }).catch(() => {});
+                            if (n.type === 'new_proposition') { setActiveTab('propositions'); setShowNotifPanel(false); }
+                          }}
+                          className={`w-full text-left px-4 py-3 border-b border-gray-50 hover:bg-gray-50 transition-colors flex gap-3 ${!n.read ? 'bg-blue-50/40' : ''}`}
+                        >
+                          <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${!n.read ? 'bg-[#4F6EF7]' : 'bg-transparent'}`} />
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold text-[#111827] truncate">{n.title}</p>
+                            <p className="text-[11px] text-[#6B7280] truncate">{n.message}</p>
+                            <p className="text-[9px] text-gray-300 font-bold mt-0.5">
+                              {n.createdAt?.toDate?.()?.toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) || ''}
+                            </p>
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </motion.div>
+              </>
+            )}
+          </AnimatePresence>
+          <button onClick={() => setShowAddNeed(true)} className="h-9 flex items-center gap-1.5 px-4 bg-[#4F6EF7] text-white rounded-lg text-[13px] font-semibold hover:opacity-90 transition-opacity">
+            <Plus size={15} /> {t.admin.newDemand}
+          </button>
         </header>
 
         {/* Content Area */}
-        <main className="flex-1 overflow-y-auto p-10 bg-gray-50">
+        <main className="flex-1 overflow-y-auto p-3 sm:p-6 md:p-7 bg-[#F0F2F8]">
           <div className="max-w-[1440px] mx-auto">
             {activeTab === 'dashboard' ? (
-              <div className="grid grid-cols-12 gap-8">
-                <div className="col-span-12 xl:col-span-8 space-y-8">
+              <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+                <div className="col-span-1 xl:col-span-8 space-y-[22px]">
                   <div>
-                    <h1 className="text-3xl font-black text-gray-900 mb-1 tracking-tight">{t.admin.hello} {user.displayName?.split(' ')[0] || 'Nasser'} 👋</h1>
-                    <p className="text-gray-400 text-sm font-medium">{t.admin.dashboardSummary}</p>
+                    <h1 className="text-3xl font-black text-gray-900 mb-1 tracking-tight">
+                      {t.admin.hello} {recruiterProfile?.contactName?.split(' ')[0] || user.displayName?.split(' ')[0] || user.email?.split('@')[0] || '—'} 👋
+                    </h1>
+                    <p className="text-gray-400 text-sm font-medium">
+                      {recruiterProfile?.companyName || newNeed.companyName || t.admin.dashboardSummary}
+                    </p>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                    <StatCard title={t.admin.pendingDemands} value={stats.pending.toString()} change="+0%" color="orange" data={SPARKLINE_DATA_UP} bgColor="bg-gray-900-50" textColor="text-gray-900" t={t} />
-                    <StatCard title={t.admin.candidatesInProgress} value={stats.processed.toString()} change="+0%" color="blue" data={SPARKLINE_DATA_UP} bgColor="bg-blue-50" textColor="text-blue-500" t={t} />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+                    <StatCard title={t.admin.pendingDemands} value={stats.pending.toString()} change="+0%" color="orange" data={SPARKLINE_DATA_UP} bgColor="bg-orange-50" textColor="text-orange-500" t={t} />
+                    <StatCard title={t.admin.candidatesInProgress} value={stats.validated.toString()} change="+0%" color="blue" data={SPARKLINE_DATA_UP} bgColor="bg-blue-50" textColor="text-blue-500" t={t} />
                     <StatCard title={t.admin.validatedRecruitments} value={stats.total.toString()} change="+0%" color="green" data={SPARKLINE_DATA_UP} bgColor="bg-green-50" textColor="text-green-500" t={t} />
                     <StatCard title={t.admin.rejected} value={stats.rejected.toString()} change="-0%" color="red" data={SPARKLINE_DATA_DOWN} bgColor="bg-red-50" textColor="text-red-500" t={t} />
                   </div>
 
-                  <div className="bg-white p-8 rounded-lg border border-gray-100 shadow-sm">
-                    <div className="flex justify-between items-center mb-8">
-                      <h3 className="text-lg font-black text-gray-900 tracking-tight">{t.admin.appEvolution}</h3>
-                      <select className="bg-gray-50 border border-gray-100 rounded-xl px-4 py-2 text-xs font-bold text-gray-500 outline-none">
+                  <div className="bg-white p-5 rounded-xl border border-[#E5E7EB]">
+                    <div className="flex justify-between items-center mb-5">
+                      <h3 className="text-sm font-bold tracking-[-0.2px] text-[#111827]">{t.admin.appEvolution}</h3>
+                      <select className="bg-[#F0F2F8] border border-[#E5E7EB] rounded-lg px-3 py-2 text-xs font-medium text-[#6B7280] outline-none">
                         <option>{t.admin.last7Days}</option>
                         <option>30 {t.admin.last30days}</option>
                       </select>
@@ -1136,19 +1326,19 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                     <div className="h-[300px] w-full" style={{ minHeight: 300, minWidth: 0, overflow: 'hidden' }}>
                       <ResponsiveContainer width="100%" height={300}>
                         <LineChart data={getChartData(lang)}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
-                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#94A3B8', fontSize: 12, fontWeight: 500}} dy={10} />
-                          <YAxis axisLine={false} tickLine={false} tick={{fill: '#94A3B8', fontSize: 12, fontWeight: 500}} />
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
+                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#9CA3AF', fontSize: 12, fontWeight: 500}} dy={10} />
+                          <YAxis axisLine={false} tickLine={false} tick={{fill: '#9CA3AF', fontSize: 12, fontWeight: 500}} />
                           <Tooltip 
-                            contentStyle={{borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'}}
-                            cursor={{stroke: '#f97316', strokeWidth: 2}}
+                            contentStyle={{borderRadius: 12, border: '1px solid #E5E7EB', boxShadow: '0 4px 20px rgba(0,0,0,0.07)'}}
+                            cursor={{stroke: '#4F6EF7', strokeWidth: 2}}
                           />
                           <Line 
                             type="monotone" 
                             dataKey="value" 
-                            stroke="#f97316" 
-                            strokeWidth={4} 
-                            dot={{fill: '#f97316', stroke: '#fff', strokeWidth: 3, r: 6}} 
+                            stroke="#4F6EF7" 
+                            strokeWidth={3} 
+                            dot={{fill: '#4F6EF7', stroke: '#fff', strokeWidth: 3, r: 5}} 
                             activeDot={{r: 8, strokeWidth: 4}} 
                           />
                         </LineChart>
@@ -1172,7 +1362,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                               logo={recruiterProfile?.logo || "https://api.dicebear.com/7.x/initials/svg?seed=" + (need.companyName || 'C')} 
                               company={need.companyName || ''} 
                               role={need.jobTitle || (need.description ? need.description.substring(0, 20) + '...' : '')} 
-                              status={need.status === 'new' ? 'New' : 'Ongoing'} 
+                              status={need.status === 'new' ? 'Soumis' : (need.status === 'validated' || need.status === 'matching') ? 'Validé' : need.status === 'rejected' ? 'Refusé' : 'En cours'} 
                               time={timeStr} 
                               t={t} 
                             />
@@ -1193,7 +1383,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                 <div className="col-span-12 xl:col-span-4 space-y-8">
                   <div className="bg-white p-8 rounded-lg border border-gray-100 shadow-sm">
                     <h3 className="text-lg font-black text-gray-900 tracking-tight mb-6">{t.admin.quickActions}</h3>
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <ActionButton icon={Plus} label={t.admin.newDemand} color="blue" onClick={() => setShowAddNeed(true)} />
                       {/* Bouton "Voir mes CV" retiré car les profils arrivent par email */}
                       <ActionButton icon={MessageSquare} label="Support" color="purple" onClick={() => setActiveTab('messages')} />
@@ -1322,6 +1512,16 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                                 <button
                                   onClick={async () => {
                                     await updateDoc(doc(db, 'propositions', prop.id), { status: 'accepted', respondedAt: serverTimestamp() });
+                                    // Sync with candidatePipeline (single source of truth)
+                                    try {
+                                      const needSnap = await getDoc(doc(db, 'needs', prop.needId));
+                                      const needData = needSnap.data();
+                                      const pipeline = Array.isArray(needData?.candidatePipeline) ? needData!.candidatePipeline : [];
+                                      const updatedPipeline = pipeline.map((e: any) =>
+                                        e.candidateId === prop.candidateId ? { ...e, step: 'cv_sent', cvSentAt: new Date().toISOString() } : e
+                                      );
+                                      await updateDoc(doc(db, 'needs', prop.needId), { candidatePipeline: updatedPipeline });
+                                    } catch (e) { console.warn('Pipeline sync failed:', e); }
                                   }}
                                   className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-green-500 text-white font-black text-xs hover:bg-green-600 transition-all shadow-lg shadow-green-500/20">
                                   <CheckCircle2 size={13} /> Accepter
@@ -1329,6 +1529,16 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                                 <button
                                   onClick={async () => {
                                     await updateDoc(doc(db, 'propositions', prop.id), { status: 'rejected', respondedAt: serverTimestamp() });
+                                    // Sync with candidatePipeline (single source of truth)
+                                    try {
+                                      const needSnap = await getDoc(doc(db, 'needs', prop.needId));
+                                      const needData = needSnap.data();
+                                      const pipeline = Array.isArray(needData?.candidatePipeline) ? needData!.candidatePipeline : [];
+                                      const updatedPipeline = pipeline.map((e: any) =>
+                                        e.candidateId === prop.candidateId ? { ...e, step: 'rejected', rejectedAt: new Date().toISOString(), rejectedReason: 'Refusé par le recruteur' } : e
+                                      );
+                                      await updateDoc(doc(db, 'needs', prop.needId), { candidatePipeline: updatedPipeline });
+                                    } catch (e) { console.warn('Pipeline sync failed:', e); }
                                   }}
                                   className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-red-100 text-red-500 font-black text-xs hover:bg-red-200 transition-all">
                                   <X size={13} /> Refuser
@@ -1351,12 +1561,157 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                             </p>
                           </div>
                         )}
+
+                        {/* Motif de refus, si renseigné par Vedior GM (synchronisé depuis le pipeline) */}
+                        {prop.status === 'rejected' && prop.rejectReason && (
+                          <div className="mx-6 mb-4 px-5 py-3 bg-red-50 rounded-2xl border border-red-100 flex items-center gap-3">
+                            <X size={16} className="text-red-400 shrink-0" />
+                            <p className="text-sm text-red-600 font-bold">{prop.rejectReason}</p>
+                          </div>
+                        )}
                       </motion.div>
                     ))}
                   </div>
                 )}
               </div>
 
+            ) : activeTab === 'pricing' ? (
+              <div className="space-y-6">
+                <div>
+                  <h1 className="text-4xl font-black text-navy mb-2 tracking-tight">Abonnement</h1>
+                  <p className="text-gray-400 text-sm font-medium">Gérez votre plan et accédez à tous les outils de recrutement</p>
+                </div>
+
+                {/* ── Statut actuel (si pro) ── */}
+                {recruiterProfile?.plan === 'pro' && recruiterProfile?.planStatus === 'active' ? (() => {
+                  const expiry = recruiterProfile.planExpiry ? new Date(recruiterProfile.planExpiry) : null;
+                  const now = new Date();
+                  const daysLeft = expiry ? Math.ceil((expiry.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)) : null;
+                  const isExpiringSoon = daysLeft !== null && daysLeft <= 10 && daysLeft > 0;
+                  const isExpired = daysLeft !== null && daysLeft <= 0;
+                  const billingLabel: Record<string, string> = { monthly: '1 mois', quarterly: '3 mois', yearly: '12 mois' };
+
+                  return (
+                    <div className="space-y-4">
+                      {/* Bannière Pro active */}
+                      <div className="rounded-2xl overflow-hidden" style={{ background: 'linear-gradient(135deg, #0A192F 0%, #0d2a4a 100%)' }}>
+                        <div className="px-8 py-6 flex items-center justify-between">
+                          <div className="flex items-center gap-5">
+                            <div className="w-14 h-14 rounded-2xl bg-orange/20 flex items-center justify-center">
+                              <span className="text-3xl">⚡</span>
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-3 mb-1">
+                                <p className="text-xl font-black text-white">Plan Pro Actif</p>
+                                {!isExpired && !isExpiringSoon && (
+                                  <span className="flex items-center gap-1.5 px-3 py-1 bg-green-500/20 text-green-400 border border-green-500/30 rounded-full text-[9px] font-black uppercase tracking-widest">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" /> Actif
+                                  </span>
+                                )}
+                                {isExpiringSoon && (
+                                  <span className="flex items-center gap-1.5 px-3 py-1 bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-full text-[9px] font-black uppercase tracking-widest">
+                                    ⚠️ Expire bientôt
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-white/50 text-sm font-medium">
+                                {billingLabel[recruiterProfile.planBilling] || 'Mensuel'} · Activé le {recruiterProfile.planActivatedAt ? new Date(recruiterProfile.planActivatedAt).toLocaleDateString('fr-FR') : '—'}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-[10px] font-black uppercase tracking-widest text-white/30 mb-1">Prochain renouvellement</p>
+                            <p className={`text-2xl font-black ${isExpiringSoon ? 'text-amber-400' : isExpired ? 'text-red-400' : 'text-white'}`}>
+                              {expiry ? expiry.toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' }) : '—'}
+                            </p>
+                            {daysLeft !== null && (
+                              <p className={`text-xs font-bold mt-1 ${isExpired ? 'text-red-400' : isExpiringSoon ? 'text-amber-400' : 'text-white/40'}`}>
+                                {isExpired ? '⚠️ Abonnement expiré' : `J-${daysLeft}`}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Grille avantages Pro */}
+                        <div className="border-t border-white/10 grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-white/10">
+                          {[
+                            { icon: '📋', label: 'Offres', value: 'Illimitées' },
+                            { icon: '🤖', label: 'Matching IA', value: 'Activé' },
+                            { icon: '👥', label: 'Profils', value: 'Accès complet' },
+                            { icon: '✉️', label: 'Support', value: 'Prioritaire 2h' },
+                          ].map(({ icon, label, value }) => (
+                            <div key={label} className="px-6 py-4 text-center">
+                              <p className="text-lg mb-1">{icon}</p>
+                              <p className="text-[9px] font-black uppercase tracking-widest text-white/30">{label}</p>
+                              <p className="text-xs font-black text-white/80 mt-0.5">{value}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Alerte expiration imminente */}
+                      {(isExpiringSoon || isExpired) && (
+                        <div className={`rounded-2xl p-5 border flex items-start gap-4 ${isExpired ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
+                          <span className="text-2xl">⚠️</span>
+                          <div className="flex-1">
+                            <p className={`font-black text-sm ${isExpired ? 'text-red-700' : 'text-amber-700'}`}>
+                              {isExpired ? 'Votre abonnement a expiré' : `Votre abonnement expire dans ${daysLeft} jour${daysLeft > 1 ? 's' : ''}`}
+                            </p>
+                            <p className={`text-xs font-medium mt-1 ${isExpired ? 'text-red-600' : 'text-amber-600'}`}>
+                              Renouvelez dès maintenant pour conserver vos accès Pro et éviter toute interruption.
+                            </p>
+                          </div>
+                          <button onClick={() => setActiveTab('pricing')}
+                            className={`shrink-0 px-5 py-2.5 rounded-xl font-black text-xs text-white uppercase tracking-wide transition-all ${isExpired ? 'bg-red-600 hover:bg-red-700' : 'bg-amber-600 hover:bg-amber-700'}`}>
+                            Renouveler
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Historique des paiements */}
+                      {recruiterProfile?.planActivatedAt && (
+                        <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                          <div className="px-6 py-4 border-b border-gray-100">
+                            <p className="font-black text-gray-900 text-sm">Historique de l'abonnement</p>
+                          </div>
+                          <div className="p-4 space-y-3">
+                            <div className="flex items-center justify-between p-4 bg-green-50 rounded-xl border border-green-100">
+                              <div className="flex items-center gap-3">
+                                <div className="w-9 h-9 rounded-xl bg-green-100 flex items-center justify-center">
+                                  <CheckCircle2 size={16} className="text-green-600" />
+                                </div>
+                                <div>
+                                  <p className="font-black text-gray-900 text-sm">Abonnement Pro — {billingLabel[recruiterProfile.planBilling] || 'Mensuel'}</p>
+                                  <p className="text-[11px] text-gray-400">Activé le {new Date(recruiterProfile.planActivatedAt).toLocaleDateString('fr-FR')}</p>
+                                </div>
+                              </div>
+                              <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-[9px] font-black uppercase border border-green-200">Confirmé</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })() : recruiterProfile?.planStatus === 'pending_confirmation' ? (
+                  /* ── En attente de confirmation ── */
+                  <div className="rounded-2xl border-2 border-dashed border-amber-300 bg-amber-50 p-8 text-center">
+                    <div className="w-16 h-16 bg-amber-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                      <Clock size={28} className="text-amber-600" />
+                    </div>
+                    <h3 className="text-xl font-black text-amber-800 mb-2">Paiement en cours de vérification</h3>
+                    <p className="text-amber-600 text-sm font-medium mb-6 max-w-md mx-auto">
+                      Votre demande a été reçue. Notre équipe va confirmer votre paiement et activer votre compte Pro.<br />
+                      <strong>Vous recevrez un email de confirmation sous 24h ouvrées.</strong>
+                    </p>
+                    <div className="inline-flex items-center gap-2 px-5 py-3 bg-amber-100 rounded-xl text-amber-700 font-black text-sm">
+                      <RefreshCw size={14} className="animate-spin" /> Vérification en cours...
+                    </div>
+                  </div>
+                ) : (
+                  /* ── Plan Free → afficher RecruiterPricing ── */
+                  <RecruiterPricing lang={lang} />
+                )}
+              </div>
             ) : activeTab === 'stats' ? (
               <div className="space-y-8">
                 <div>
@@ -1367,12 +1722,12 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                    <div className="bg-white p-8 rounded-xl border border-gray-100 shadow-sm flex flex-col items-center justify-center text-center">
                       <div className="w-20 h-20 bg-green-50 text-green-500 rounded-full flex items-center justify-center mb-6 border border-green-100"><Users size={32} /></div>
-                      <p className="text-5xl font-black text-gray-900 mb-2">{stats.total > 0 ? Math.round((stats.processed / stats.total) * 100) : 0}%</p>
+                      <p className="text-5xl font-black text-gray-900 mb-2">{stats.total > 0 ? Math.round((stats.validated / stats.total) * 100) : 0}%</p>
                       <p className="text-sm font-bold text-gray-400 uppercase tracking-normal">{t.admin.retentionRate}</p>
                    </div>
                    <div className="bg-white p-8 rounded-xl border border-gray-100 shadow-sm flex flex-col items-center justify-center text-center">
                       <div className="w-20 h-20 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mb-6 border border-blue-100"><Clock size={32} /></div>
-                      <p className="text-5xl font-black text-gray-900 mb-2">{stats.processed > 0 ? Math.ceil(stats.processed * 4.2) : 0}j</p>
+                      <p className="text-5xl font-black text-gray-900 mb-2">{stats.validated > 0 ? Math.ceil(stats.validated * 4.2) : 0}j</p>
                       <p className="text-sm font-bold text-gray-400 uppercase tracking-normal">{t.admin.avgHiringTime}</p>
                    </div>
                    <div className="bg-white p-8 rounded-xl border border-gray-100 shadow-sm flex flex-col items-center justify-center text-center">
@@ -1411,16 +1766,60 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                   <h1 className="text-3xl font-black text-gray-900 mb-1 tracking-tight">{t.admin.centralizedMessaging}</h1>
                   <p className="text-gray-400 text-sm font-medium">Messagerie interne avec l'équipe Vedior GM</p>
                 </div>
-                <div className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col overflow-hidden" style={{minHeight: '500px'}}>
-                  <div className="flex-1 overflow-y-auto p-8 space-y-4" style={{minHeight: '380px'}}>
-                    {messages.length === 0 ? (
+
+                {/* ── Demandes de modification envoyées ── */}
+                {(() => {
+                  const modifMsgs = messages.filter((m: any) => m.type === 'modification_request');
+                  if (modifMsgs.length === 0) return null;
+                  return (
+                    <div className="bg-amber-50 border border-amber-100 rounded-2xl overflow-hidden">
+                      <div className="flex items-center gap-3 px-6 py-4 border-b border-amber-100">
+                        <span className="text-lg">✏️</span>
+                        <p className="font-black text-amber-700 text-sm uppercase tracking-wider">Demandes de modification</p>
+                        <span className="ml-auto text-[10px] font-black bg-amber-200 text-amber-700 px-2.5 py-1 rounded-full">{modifMsgs.length}</span>
+                      </div>
+                      <div className="divide-y divide-amber-100">
+                        {modifMsgs.map((msg: any) => (
+                          <div key={msg.id} className="px-6 py-4 flex items-start gap-4">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 mb-1">
+                                <p className="text-xs font-black text-gray-900">{msg.needTitle}</p>
+                                <span className="text-[9px] font-mono text-gray-400">#{msg.needId?.slice(-6)}</span>
+                              </div>
+                              <p className="text-sm text-gray-600 font-medium leading-relaxed">{msg.text}</p>
+                              <p className="text-[10px] text-gray-400 mt-1">{msg.createdAt?.toDate?.().toLocaleDateString('fr-FR')} à {msg.createdAt?.toDate?.().toLocaleTimeString('fr-FR', {hour:'2-digit',minute:'2-digit'})}</p>
+                            </div>
+                            <span className={`flex-shrink-0 text-[10px] font-black uppercase tracking-wider px-3 py-1.5 rounded-full border ${
+                              msg.status === 'approved' ? 'bg-green-50 text-green-600 border-green-200' :
+                              msg.status === 'rejected' ? 'bg-red-50 text-red-500 border-red-200' :
+                              'bg-amber-100 text-amber-600 border-amber-200'
+                            }`}>
+                              {msg.status === 'approved' ? '✅ Approuvée' : msg.status === 'rejected' ? '❌ Refusée' : '⏳ En attente'}
+                            </span>
+                            {msg.adminReply && (
+                              <div className="mt-2 bg-white rounded-xl px-4 py-2.5 border border-amber-100">
+                                <p className="text-[9px] font-black uppercase tracking-wider text-amber-500 mb-1">Réponse VGM</p>
+                                <p className="text-xs text-gray-600 font-medium">{msg.adminReply}</p>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* ── Messagerie générale ── */}
+                <div className="bg-white rounded-xl border border-gray-100 shadow-sm flex flex-col overflow-hidden" style={{minHeight: '420px'}}>
+                  <div className="flex-1 overflow-y-auto p-8 space-y-4" style={{minHeight: '340px'}}>
+                    {messages.filter((m: any) => m.type !== 'modification_request').length === 0 ? (
                       <div className="flex flex-col items-center justify-center h-64 text-center opacity-40">
                         <MessageSquare size={64} className="mb-4 text-gray-300" />
                         <p className="text-lg font-black uppercase text-gray-400 tracking-tight">Contactez votre chargé de recrutement</p>
                         <p className="text-sm text-gray-400 italic mt-2">Cette messagerie vous permet d'échanger directement avec l'équipe dédiée à votre compte.</p>
                       </div>
                     ) : (
-                      messages.map((msg) => (
+                      messages.filter((m: any) => m.type !== 'modification_request').map((msg: any) => (
                         <div key={msg.id} className={`flex ${msg.sender === 'recruiter' ? 'justify-end' : 'justify-start'}`}>
                           <div className={`max-w-[70%] px-5 py-3 rounded-[20px] text-sm font-medium ${msg.sender === 'recruiter' ? 'bg-gray-900 text-white rounded-br-sm' : 'bg-gray-100 text-gray-900 rounded-bl-sm'}`}>
                             <p>{msg.text}</p>
@@ -1433,18 +1832,18 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                     )}
                   </div>
                   <div className="p-6 border-t border-gray-100 flex gap-4">
-                    <input 
-                      type="text" 
-                      placeholder="Écrivez votre message..." 
+                    <input
+                      type="text"
+                      placeholder="Écrivez votre message..."
                       value={messageText}
                       onChange={e => setMessageText(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
-                      className="flex-1 bg-white border border-gray-100 rounded-2xl px-6 py-4 outline-none focus:border-gray-300 shadow-sm font-bold text-sm" 
+                      className="flex-1 bg-white border border-gray-100 rounded-2xl px-6 py-4 outline-none focus:border-gray-300 shadow-sm font-bold text-sm"
                     />
-                    <button 
+                    <button
                       onClick={handleSendMessage}
                       disabled={sendingMessage || !messageText.trim()}
-                      className="bg-gray-900 text-white w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg shadow-gray-200/20 hover:scale-105 active:scale-95 transition-all disabled:opacity-50">
+                      className="bg-gray-900 text-white w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg hover:scale-105 active:scale-95 transition-all disabled:opacity-50">
                       {sendingMessage ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <ChevronRight size={24} />}
                     </button>
                   </div>
@@ -1624,12 +2023,36 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                         <div className="space-y-2">
                           <div className="flex justify-between items-center py-2 border-b border-white/5">
                             <span className="text-[11px] text-white/40 font-bold uppercase">Plan</span>
-                            <span className="text-[11px] font-black text-[#00A3E0]">Pro Recruteur</span>
+                            <span className={`text-[11px] font-black ${recruiterProfile?.plan === 'pro' ? 'text-orange' : 'text-white/50'}`}>
+                              {recruiterProfile?.plan === 'pro' ? '⚡ Pro' : 'Free'}
+                            </span>
                           </div>
-                          <div className="flex justify-between items-center py-2">
-                            <span className="text-[11px] text-white/40 font-bold uppercase">Status</span>
-                            <span className="flex items-center gap-1.5 text-[11px] font-black text-green-400"><span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" /> Actif</span>
+                          <div className="flex justify-between items-center py-2 border-b border-white/5">
+                            <span className="text-[11px] text-white/40 font-bold uppercase">Statut</span>
+                            {recruiterProfile?.planStatus === 'active' ? (
+                              <span className="flex items-center gap-1.5 text-[11px] font-black text-green-400">
+                                <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" /> Actif
+                              </span>
+                            ) : recruiterProfile?.planStatus === 'pending_confirmation' ? (
+                              <span className="flex items-center gap-1.5 text-[11px] font-black text-amber-400">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse inline-block" /> En attente
+                              </span>
+                            ) : (
+                              <span className="text-[11px] font-black text-white/30">—</span>
+                            )}
                           </div>
+                          {recruiterProfile?.plan === 'pro' && recruiterProfile?.planExpiry && (() => {
+                            const exp = new Date(recruiterProfile.planExpiry);
+                            const days = Math.ceil((exp.getTime() - Date.now()) / 86400000);
+                            return (
+                              <div className="flex justify-between items-center py-2">
+                                <span className="text-[11px] text-white/40 font-bold uppercase">Expiration</span>
+                                <span className={`text-[11px] font-black ${days <= 10 ? 'text-amber-400' : 'text-white/60'}`}>
+                                  {exp.toLocaleDateString('fr-FR')} {days > 0 && days <= 10 ? `(J-${days})` : ''}
+                                </span>
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
                     </div>
@@ -1921,7 +2344,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                     </div>
 
                     {/* Diplôme + Salaire */}
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div className="group">
                         <label className="text-[9px] font-black uppercase tracking-widest text-gray-400 ml-1 mb-1.5 block transition-colors group-focus-within:text-orange">
                           💼 Diplôme requis
@@ -2083,65 +2506,467 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
       </AnimatePresence>
 
       {/* ── Need Detail Modal ── */}
+      {/* ══ PIPELINE MODAL ══ */}
       {selectedNeed && (
-        <div
-          className="fixed inset-0 z-[200] flex items-center justify-center p-6"
-          style={{ backgroundColor: 'rgba(10,25,47,0.7)', backdropFilter: 'blur(8px)' }}
-          onClick={() => setSelectedNeed(null)}
-        >
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            className="bg-white rounded-[2rem] shadow-sm w-full max-w-2xl overflow-hidden"
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="bg-gray-900 px-8 py-6 flex items-center justify-between">
-              <div>
-                <p className="text-gray-900 text-[10px] font-black uppercase tracking-normal mb-1">{selectedNeed.needType} — {selectedNeed.sector}</p>
-                <h2 className="text-white text-2xl font-black font-semibold">{selectedNeed.jobTitle}</h2>
-              </div>
-              <button onClick={() => setSelectedNeed(null)} className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-white hover:bg-gray-900 transition-all">
-                ✕
-              </button>
-            </div>
-            <div className="p-8 space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                {[
-                  { label: 'Entreprise', value: selectedNeed.companyName },
-                  { label: 'Contact', value: selectedNeed.contactName },
-                  { label: 'Email', value: selectedNeed.email },
-                  { label: 'Téléphone', value: selectedNeed.phone || '—' },
-                  { label: 'Profils recherchés', value: selectedNeed.profileCount || 1 },
-                  { label: 'Expérience requise', value: selectedNeed.expRequired ? `${selectedNeed.expRequired} ans` : '—' },
-                  { label: 'Statut', value: selectedNeed.status || 'new' },
-                  { label: 'Date', value: selectedNeed.createdAt?.toDate?.()?.toLocaleDateString() || '—' },
-                ].map(({ label, value }) => (
-                  <div key={label} className="bg-gray-50 rounded-2xl p-4">
-                    <p className="text-[9px] font-black uppercase tracking-normal text-gray-400 mb-1">{label}</p>
-                    <p className="text-sm font-black text-gray-900">{value}</p>
-                  </div>
-                ))}
-              </div>
-              {selectedNeed.description && (
-                <div className="bg-gray-50 rounded-2xl p-4">
-                  <p className="text-[9px] font-black uppercase tracking-normal text-gray-400 mb-1">Description</p>
-                  <p className="text-sm text-gray-900 font-medium">{selectedNeed.description}</p>
-                </div>
-              )}
-            </div>
-            <div className="px-8 pb-8">
-              <button onClick={() => setSelectedNeed(null)} className="w-full py-4 bg-gray-900 text-white text-[10px] font-black uppercase tracking-normal rounded-2xl hover:bg-gray-900 transition-all">
-                Fermer
-              </button>
-            </div>
-          </motion.div>
-        </div>
+        <NeedDetailModal
+          selectedNeed={selectedNeed}
+          setSelectedNeed={setSelectedNeed}
+          user={user}
+          recruiterProfile={recruiterProfile}
+          db={db}
+          candidates={candidates}
+          isProActive={isProActive}
+          setActiveTab={setActiveTab}
+        />
       )}
+
+
+      {/* ══ Mobile Bottom Nav Bar ══ */}
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-[#12152B] border-t border-white/10 flex items-center justify-around px-2 h-16">
+        {[
+          { id: 'dashboard',    icon: LayoutDashboard, label: 'Dashboard' },
+          { id: 'needs',        icon: Briefcase,       label: 'Demandes' },
+          { id: 'propositions', icon: Users,           label: 'Profils' },
+          { id: 'messages',     icon: MessageSquare,   label: 'Messages' },
+          { id: 'settings',     icon: Settings,        label: 'Réglages' },
+        ].map(({ id, icon: Icon, label }) => (
+          <button key={id} onClick={() => { setActiveTab(id as any); setSidebarOpen(false); }}
+            className={`flex flex-col items-center justify-center gap-1 flex-1 h-full transition-all ${activeTab === id ? 'text-[#4F6EF7]' : 'text-white/40'}`}>
+            <Icon size={20} />
+            <span className="text-[9px] font-bold uppercase">{label}</span>
+          </button>
+        ))}
+      </nav>
+
+      <div className="lg:hidden h-16 shrink-0" />
     </div>
   );
 }
 
 // Composants internes (inchangés)
+function NeedDetailModal({ selectedNeed, setSelectedNeed, user, recruiterProfile, db, candidates, isProActive, setActiveTab }: {
+  selectedNeed: any; setSelectedNeed: (v: any) => void; user: any; recruiterProfile: any; db: any;
+  candidates: any[]; isProActive: boolean; setActiveTab: (v: any) => void;
+}) {
+  const PIPELINE = [
+    { key: 'new',                 label: 'Soumis',             icon: '📋', desc: 'Demande reçue, en attente de traitement' },
+    { key: 'validated',           label: 'Validé',             icon: '✅', desc: 'Besoin confirmé par VGM' },
+    { key: 'matching',            label: 'Matching',           icon: '🎯', desc: 'Sélection des candidats en cours' },
+    { key: 'interview_scheduled', label: 'Entretien prévu',    icon: '📅', desc: 'Entretien planifié avec le recruteur' },
+    { key: 'interview_done',      label: 'Entretien effectué', icon: '🤝', desc: 'Décision en cours' },
+    { key: 'offer_sent',          label: 'Offre envoyée',      icon: '📨', desc: 'Proposition transmise au candidat' },
+    { key: 'hired',               label: 'Recruté',            icon: '🏆', desc: 'Mission accomplie !' },
+  ];
+  const LOCKED_STATUSES = ['new', 'validated', 'matching', 'interview_scheduled', 'interview_done', 'offer_sent', 'hired', 'closed', 'rejected'];
+  const CLOSED = ['closed', 'rejected'];
+
+  const currentIdx   = PIPELINE.findIndex(s => s.key === selectedNeed.status);
+  const effectiveIdx = currentIdx === -1 ? 0 : currentIdx;
+  const isClosed     = CLOSED.includes(selectedNeed.status);
+  const isHired      = selectedNeed.status === 'hired';
+  const isLocked     = LOCKED_STATUSES.includes(selectedNeed.status);
+  const canAdvance   = !isClosed && !isHired && effectiveIdx < PIPELINE.length - 1;
+  const nextStage    = canAdvance ? PIPELINE[effectiveIdx + 1] : null;
+
+  const [confirmOpen,    setConfirmOpen]    = React.useState(false);
+  const [closeConfirm,   setCloseConfirm]   = React.useState(false);
+  const [advancing,      setAdvancing]      = React.useState(false);
+  const [interviewDate,  setInterviewDate]  = React.useState('');
+  const [interviewNotes, setInterviewNotes] = React.useState('');
+  // Modification request
+  const [showModif,   setShowModif]   = React.useState(false);
+  const [modifText,   setModifText]   = React.useState('');
+  const [sendingMod,  setSendingMod]  = React.useState(false);
+  const [modifSent,   setModifSent]   = React.useState(false);
+
+  const advancePipeline = async () => {
+    if (!nextStage) return;
+    setAdvancing(true);
+    try {
+      const upd: any = { status: nextStage.key, updatedAt: serverTimestamp(), [`stageHistory.${nextStage.key}`]: serverTimestamp() };
+      if (nextStage.key === 'interview_scheduled' && interviewDate) { upd.interviewDate = interviewDate; upd.interviewNotes = interviewNotes; }
+      await updateDoc(doc(db, 'needs', selectedNeed.id), upd);
+      setSelectedNeed((p: any) => ({ ...p, status: nextStage.key, interviewDate, interviewNotes }));
+      setConfirmOpen(false); setInterviewDate(''); setInterviewNotes('');
+    } finally { setAdvancing(false); }
+  };
+
+  const closeNeed = async (reason: 'closed' | 'rejected') => {
+    setAdvancing(true);
+    try {
+      await updateDoc(doc(db, 'needs', selectedNeed.id), { status: reason, closedAt: serverTimestamp(), updatedAt: serverTimestamp() });
+      setSelectedNeed((p: any) => ({ ...p, status: reason }));
+      setCloseConfirm(false);
+    } finally { setAdvancing(false); }
+  };
+
+  const sendModifRequest = async () => {
+    if (!user || !modifText.trim()) return;
+    setSendingMod(true);
+    try {
+      await addDoc(collection(db, 'messages'), {
+        userId:      user.uid,
+        userEmail:   user.email,
+        companyName: recruiterProfile?.companyName || '',
+        sender:      'recruiter',
+        type:        'modification_request',
+        needId:      selectedNeed.id,
+        needTitle:   selectedNeed.jobTitle,
+        needSector:  selectedNeed.sector,
+        text:        modifText.trim(),
+        status:      'pending',
+        read:        false,
+        createdAt:   serverTimestamp(),
+      });
+      setModifSent(true);
+      setTimeout(() => { setShowModif(false); setModifSent(false); setModifText(''); }, 2200);
+    } finally { setSendingMod(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 lg:p-6"
+      style={{ backgroundColor: 'rgba(10,25,47,0.75)', backdropFilter: 'blur(8px)' }}
+      onClick={() => { if (!confirmOpen && !closeConfirm && !showModif) setSelectedNeed(null); }}>
+      <motion.div initial={{ opacity: 0, scale: 0.96, y: 24 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+        className="bg-white rounded-[2rem] shadow-2xl w-full max-w-3xl overflow-hidden max-h-[90vh] flex flex-col"
+        onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div className="bg-gray-900 px-8 py-6 flex items-start justify-between flex-shrink-0">
+          <div>
+            <p className="text-gray-400 text-[10px] font-black uppercase tracking-widest mb-1">{selectedNeed.needType} — {selectedNeed.sector?.toUpperCase()}</p>
+            <h2 className="text-white text-2xl font-black">{selectedNeed.jobTitle}</h2>
+            <p className="text-gray-400 text-xs font-medium mt-1">{selectedNeed.companyName}</p>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {isLocked && !isClosed && !isHired && (
+              <span className="text-[10px] font-black uppercase tracking-wider bg-amber-400/20 text-amber-300 px-3 py-1.5 rounded-full border border-amber-400/30">
+                {selectedNeed.status === 'new' ? '⏳ En attente admin' : '🔒 Verrouillé'}
+              </span>
+            )}
+            <button onClick={() => setSelectedNeed(null)} className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-white hover:bg-white/20 transition-all text-sm">✕</button>
+          </div>
+        </div>
+
+        <div className="overflow-y-auto flex-1 p-8 space-y-8">
+
+          {/* Pipeline progress */}
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-5">Progression du recrutement</p>
+            {isClosed ? (
+              <div className={`flex items-center gap-3 px-5 py-4 rounded-2xl ${selectedNeed.status === 'rejected' ? 'bg-red-50 border border-red-100' : 'bg-gray-100 border border-gray-200'}`}>
+                <span className="text-2xl">{selectedNeed.status === 'rejected' ? '❌' : '🔒'}</span>
+                <div>
+                  <p className={`font-black text-sm ${selectedNeed.status === 'rejected' ? 'text-red-600' : 'text-gray-600'}`}>
+                    {selectedNeed.status === 'rejected' ? 'Demande refusée' : 'Dossier clôturé'}
+                  </p>
+                  <p className="text-xs text-gray-400 font-medium mt-0.5">Ce dossier ne peut plus être modifié</p>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="relative">
+                  <div className="absolute top-5 left-5 right-5 h-0.5 bg-gray-100 z-0" />
+                  <div className="absolute top-5 left-5 h-0.5 bg-gray-900 z-0 transition-all duration-700"
+                    style={{ width: `${(effectiveIdx / (PIPELINE.length - 1)) * 88}%` }} />
+                  <div className="relative z-10 flex justify-between">
+                    {PIPELINE.map((stage, idx) => {
+                      const done = idx < effectiveIdx, current = idx === effectiveIdx;
+                      return (
+                        <div key={stage.key} className="flex flex-col items-center gap-2" style={{ width: `${100/PIPELINE.length}%` }}>
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm border-2 transition-all ${done ? 'bg-gray-900 border-gray-900 text-white' : current ? 'bg-white border-gray-900 shadow-lg ring-4 ring-gray-900/10' : 'bg-white border-gray-200 text-gray-300'}`}>
+                            {done ? '✓' : <span className={current ? 'text-base' : 'text-sm grayscale opacity-40'}>{stage.icon}</span>}
+                          </div>
+                          <p className={`text-[9px] font-black uppercase tracking-wide text-center leading-tight ${current ? 'text-gray-900' : done ? 'text-gray-500' : 'text-gray-300'}`}>{stage.label}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="mt-5 flex items-start gap-3 bg-gray-50 rounded-2xl px-5 py-4 border border-gray-100">
+                  <span className="text-xl">{PIPELINE[effectiveIdx]?.icon}</span>
+                  <div>
+                    <p className="text-xs font-black text-gray-900">Étape actuelle : {PIPELINE[effectiveIdx]?.label}</p>
+                    <p className="text-[11px] text-gray-400 font-medium mt-0.5">{PIPELINE[effectiveIdx]?.desc}</p>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Infos */}
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-4">Détails du poste</p>
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { label: 'Contact',             value: selectedNeed.contactName },
+                { label: 'Email',               value: selectedNeed.email },
+                { label: 'Téléphone',           value: selectedNeed.phone || '—' },
+                { label: 'Profils recherchés',  value: selectedNeed.profileCount || 1 },
+                { label: 'Expérience requise',  value: selectedNeed.expRequired ? `${selectedNeed.expRequired} ans` : '—' },
+                { label: 'Soumis le',           value: selectedNeed.createdAt?.toDate?.()?.toLocaleDateString('fr-FR') || '—' },
+              ].map(({ label, value }) => (
+                <div key={label} className="bg-gray-50 rounded-xl p-3.5 border border-gray-100">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-1">{label}</p>
+                  <p className="text-sm font-black text-gray-900">{value}</p>
+                </div>
+              ))}
+            </div>
+            {selectedNeed.description && (
+              <div className="mt-3 bg-gray-50 rounded-xl p-4 border border-gray-100">
+                <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-1">Description</p>
+                <p className="text-sm text-gray-700 font-medium leading-relaxed">{selectedNeed.description}</p>
+              </div>
+            )}
+            {selectedNeed.interviewDate && (
+              <div className="mt-3 bg-blue-50 rounded-xl p-4 border border-blue-100">
+                <p className="text-[9px] font-black uppercase tracking-widest text-blue-400 mb-1">📅 Date d'entretien</p>
+                <p className="text-sm font-black text-blue-900">{new Date(selectedNeed.interviewDate).toLocaleString('fr-FR')}</p>
+                {selectedNeed.interviewNotes && <p className="text-xs text-blue-600 font-medium mt-1">{selectedNeed.interviewNotes}</p>}
+              </div>
+            )}
+          </div>
+
+          {/* ── Matching candidats — réservé aux recruteurs Pro ── */}
+          {!isClosed && (
+            isProActive ? (
+              <MatchingPanel
+                need={selectedNeed}
+                candidates={candidates}
+                linkedIds={new Set((selectedNeed.candidatePipeline || []).map((e: any) => e.candidateId))}
+                onLink={async (needId: string, candidateId: string, mode: 'ai' | 'manual') => {
+                  // Same bridge as the admin side: create a proposition doc + back-link it
+                  // into the candidatePipeline entry (candidatePipeline stays the source of truth).
+                  const candidateData = candidates.find(c => c.id === candidateId) || {};
+                  const propRef = await addDoc(collection(db, 'propositions'), {
+                    needId,
+                    candidateId,
+                    recruiterId: user?.uid || '',
+                    recruiterEmail: user?.email || '',
+                    companyName: recruiterProfile?.companyName || '',
+                    jobTitle: selectedNeed.jobTitle || selectedNeed.title || '',
+                    candidateName: candidateData?.fullName || candidateData?.displayName || 'Candidat',
+                    candidateEmail: candidateData?.email || '',
+                    candidatePhone: candidateData?.phone || '',
+                    candidateSector: candidateData?.sector || '',
+                    candidateExperience: candidateData?.experience || '',
+                    candidateEducation: candidateData?.education || '',
+                    candidateLanguages: candidateData?.languages || '',
+                    candidateAvailability: candidateData?.availability || '',
+                    cvUrl: candidateData?.cvUrl || null,
+                    mode,
+                    status: 'accepted', // self-selected by the recruiter — no admin approval step needed
+                    createdAt: serverTimestamp(),
+                    viewedAt: serverTimestamp(),
+                  });
+                  try {
+                    const freshSnap = await getDoc(doc(db, 'needs', needId));
+                    const freshData = freshSnap.data();
+                    const pipeline = Array.isArray(freshData?.candidatePipeline) ? freshData!.candidatePipeline : [];
+                    const updatedPipeline = pipeline.map((e: any) =>
+                      e.candidateId === candidateId ? { ...e, propositionId: propRef.id } : e
+                    );
+                    if (updatedPipeline.some((e: any) => e.candidateId === candidateId)) {
+                      await updateDoc(doc(db, 'needs', needId), { candidatePipeline: updatedPipeline });
+                    }
+                  } catch (e) { console.warn('Could not link propositionId to pipeline entry:', e); }
+
+                  // Notify admin so they stay in the loop
+                  try {
+                    await addDoc(collection(db, 'notifications'), {
+                      userId: 'admin',
+                      type: 'recruiter_self_matched',
+                      title: 'Matching réalisé par un recruteur',
+                      message: `${recruiterProfile?.companyName || 'Un recruteur'} a sélectionné un candidat pour "${selectedNeed.jobTitle || selectedNeed.title}"`,
+                      needId, candidateId,
+                      read: false,
+                      createdAt: serverTimestamp(),
+                    });
+                  } catch (e) { console.warn('Admin notif failed:', e); }
+                }}
+              />
+            ) : (
+              <div className="bg-gradient-to-br from-gray-900 to-gray-800 rounded-2xl p-6 text-center">
+                <div className="w-12 h-12 rounded-xl bg-white/10 flex items-center justify-center mx-auto mb-3">
+                  <span className="text-2xl">🤖</span>
+                </div>
+                <p className="text-white font-black text-sm mb-1">Matching IA réservé au plan Pro</p>
+                <p className="text-gray-400 text-xs font-medium mb-4 max-w-sm mx-auto">
+                  Passez Pro pour scorer et sélectionner vous-même les meilleurs candidats pour cette demande, sans attendre l'équipe Vedior GM.
+                </p>
+                <button
+                  onClick={() => { setSelectedNeed(null); setActiveTab('pricing'); }}
+                  className="inline-flex items-center gap-2 bg-white text-gray-900 px-5 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider hover:bg-gray-100 transition-all"
+                >
+                  ⚡ Passer Pro
+                </button>
+              </div>
+            )
+          )}
+
+        </div>
+
+        {/* Footer */}
+        <div className="px-8 py-5 border-t border-gray-100 flex items-center gap-3 flex-shrink-0 bg-white flex-wrap">
+          {!isClosed && !isHired && (
+            <button onClick={() => setCloseConfirm(true)}
+              className="px-5 py-3 rounded-xl border border-gray-200 text-xs font-black uppercase tracking-wider text-gray-400 hover:border-red-200 hover:text-red-400 transition-all">
+              Clôturer
+            </button>
+          )}
+          {/* Bouton modif visible si besoin verrouillé (déjà validé) */}
+          {isLocked && !isClosed && selectedNeed.status !== 'new' && (
+            <button onClick={() => setShowModif(true)}
+              className="flex items-center gap-2 px-5 py-3 rounded-xl border border-amber-200 text-xs font-black uppercase tracking-wider text-amber-600 hover:bg-amber-50 transition-all">
+              ✏️ Demander une modification
+            </button>
+          )}
+          {selectedNeed.status === 'new' && !isClosed && (
+            <span className="flex items-center gap-2 px-5 py-3 rounded-xl border border-blue-100 text-xs font-black text-blue-400 bg-blue-50">
+              ⏳ Demande soumise — en attente de validation admin
+            </span>
+          )}
+          {selectedNeed.unlocked && selectedNeed.status === 'new' && (
+            <span className="flex items-center gap-2 px-5 py-3 rounded-xl border border-green-100 text-xs font-black text-green-600 bg-green-50">
+              ✅ Modification approuvée — vous pouvez éditer et re-soumettre
+            </span>
+          )}
+          <div className="flex-1" />
+          {isHired && <p className="text-green-600 font-black text-sm">🏆 Recrutement terminé avec succès !</p>}
+          {canAdvance && (
+            <button onClick={() => setConfirmOpen(true)}
+              className="flex items-center gap-2 bg-gray-900 text-white px-7 py-3 rounded-xl text-xs font-black uppercase tracking-wider hover:bg-orange transition-all shadow-lg">
+              {nextStage?.icon} Passer à : {nextStage?.label} →
+            </button>
+          )}
+        </div>
+      </motion.div>
+
+      {/* ── Modal confirmation avancement ── */}
+      {confirmOpen && nextStage && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-6" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }} onClick={() => setConfirmOpen(false)}>
+          <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+            className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8 space-y-6" onClick={e => e.stopPropagation()}>
+            <div className="text-center">
+              <div className="text-5xl mb-4">{nextStage.icon}</div>
+              <h3 className="text-xl font-black text-gray-900">Confirmer l'avancement</h3>
+              <p className="text-sm text-gray-400 font-medium mt-2">
+                Passer <strong className="text-gray-700">«{selectedNeed.jobTitle}»</strong> à l'étape<br />
+                <span className="text-gray-900 font-black">{nextStage.label}</span>
+              </p>
+              <p className="text-[11px] text-gray-400 mt-1">{nextStage.desc}</p>
+            </div>
+            {nextStage.key === 'interview_scheduled' && (
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-wider text-gray-400 mb-1 block">Date & heure de l'entretien</label>
+                  <input type="datetime-local" value={interviewDate} onChange={e => setInterviewDate(e.target.value)}
+                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm font-bold focus:outline-none focus:border-gray-900" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-wider text-gray-400 mb-1 block">Notes (lieu, format…)</label>
+                  <textarea value={interviewNotes} onChange={e => setInterviewNotes(e.target.value)} rows={2}
+                    placeholder="Ex: Teams, lien envoyé par email..."
+                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm font-medium resize-none focus:outline-none focus:border-gray-900" />
+                </div>
+              </div>
+            )}
+            <div className="flex gap-3">
+              <button onClick={() => setConfirmOpen(false)} className="flex-1 py-3 rounded-xl border border-gray-200 text-xs font-black uppercase tracking-wider text-gray-500 hover:bg-gray-50">Annuler</button>
+              <button onClick={advancePipeline} disabled={advancing || (nextStage.key === 'interview_scheduled' && !interviewDate)}
+                className="flex-1 py-3 rounded-xl bg-gray-900 text-white text-xs font-black uppercase tracking-wider hover:bg-orange transition-all disabled:opacity-40">
+                {advancing ? 'En cours...' : 'Confirmer →'}
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* ── Modal clôture ── */}
+      {closeConfirm && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-6" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }} onClick={() => setCloseConfirm(false)}>
+          <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+            className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 space-y-5 text-center" onClick={e => e.stopPropagation()}>
+            <p className="text-4xl">🔒</p>
+            <h3 className="text-xl font-black text-gray-900">Clôturer ce dossier</h3>
+            <p className="text-sm text-gray-400 font-medium">Cette action est définitive. Choisissez la raison :</p>
+            <div className="space-y-3">
+              <button onClick={() => closeNeed('closed')} disabled={advancing}
+                className="w-full py-3.5 rounded-xl bg-gray-100 text-gray-700 text-xs font-black uppercase tracking-wider hover:bg-gray-200 transition-all">
+                ✅ Clôturé (recrutement terminé)
+              </button>
+              <button onClick={() => closeNeed('rejected')} disabled={advancing}
+                className="w-full py-3.5 rounded-xl bg-red-50 text-red-500 text-xs font-black uppercase tracking-wider hover:bg-red-100 transition-all">
+                ❌ Refusé / Annulé
+              </button>
+            </div>
+            <button onClick={() => setCloseConfirm(false)} className="text-xs text-gray-400 font-bold hover:text-gray-600 underline">Annuler</button>
+          </motion.div>
+        </div>
+      )}
+
+      {/* ── Modal demande de modification ── */}
+      {showModif && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-6" style={{ backgroundColor: 'rgba(0,0,0,0.55)' }} onClick={() => setShowModif(false)}>
+          <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+            className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8 space-y-6" onClick={e => e.stopPropagation()}>
+            {modifSent ? (
+              <div className="text-center py-4 space-y-3">
+                <p className="text-5xl">✅</p>
+                <h3 className="text-xl font-black text-gray-900">Demande envoyée !</h3>
+                <p className="text-sm text-gray-400 font-medium">L'équipe VGM traitera votre demande dans les plus brefs délais.</p>
+              </div>
+            ) : (
+              <>
+                <div>
+                  <h3 className="text-xl font-black text-gray-900">Demander une modification</h3>
+                  <p className="text-sm text-gray-400 font-medium mt-1">
+                    Votre demande sera transmise à l'équipe VGM pour traitement.
+                  </p>
+                </div>
+
+                {/* Référence automatique */}
+                <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 space-y-1">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-amber-500">Référence de la demande</p>
+                  <p className="text-sm font-black text-gray-900">{selectedNeed.jobTitle}</p>
+                  <p className="text-[10px] text-gray-400 font-mono">ID : {selectedNeed.id}</p>
+                  <p className="text-[10px] text-gray-400">Secteur : {selectedNeed.sector?.toUpperCase()} • Statut actuel : {PIPELINE[effectiveIdx]?.label}</p>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-wider text-gray-400 mb-2 block">
+                    Décrivez la modification souhaitée *
+                  </label>
+                  <textarea
+                    value={modifText}
+                    onChange={e => setModifText(e.target.value)}
+                    rows={5}
+                    placeholder={"Ex: Je voudrais changer l'expérience requise de 3 à 5 ans, et ajouter la compétence Excel avancé..."}
+                    className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm font-medium resize-none focus:outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100 leading-relaxed"
+                  />
+                  <p className="text-[10px] text-gray-400 font-medium mt-1.5">{modifText.length} caractères</p>
+                </div>
+
+                <div className="flex gap-3">
+                  <button onClick={() => setShowModif(false)}
+                    className="flex-1 py-3 rounded-xl border border-gray-200 text-xs font-black uppercase tracking-wider text-gray-500 hover:bg-gray-50">
+                    Annuler
+                  </button>
+                  <button onClick={sendModifRequest} disabled={sendingMod || modifText.trim().length < 10}
+                    className="flex-1 py-3 rounded-xl bg-amber-500 text-white text-xs font-black uppercase tracking-wider hover:bg-amber-600 transition-all disabled:opacity-40 flex items-center justify-center gap-2">
+                    {sendingMod ? <><span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Envoi...</> : '✉️ Envoyer la demande'}
+                  </button>
+                </div>
+              </>
+            )}
+          </motion.div>
+        </div>
+      )}
+
+    </div>
+  );
+}
+
 function NavItem({ icon: Icon, label, active, onClick, badge }: { icon: any, label: string, active: boolean, onClick: () => void, badge?: number }) {
   return (
     <button 
@@ -2372,6 +3197,7 @@ function NeedsTab({ needs, loading, searchQuery, recruiterProfile, needsPage, se
           </>
         )}
       </div>
+
     </div>
   );
 }

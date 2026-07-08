@@ -13,6 +13,7 @@ import {
 import { auth, db } from '../lib/firebase';
 import { getStorage, ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { useTranslation } from '../lib/i18n';
+import { useCompanyInfo } from '../lib/useCompanyInfo';
 import { 
   collection, query, where, orderBy, onSnapshot, doc, setDoc, addDoc, serverTimestamp, updateDoc
 } from 'firebase/firestore';
@@ -94,24 +95,33 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 
 type CandidatePanelProps = {
   onBack: () => void;
+  onSignOut?: () => void;
 };
 
-const getChartData = (lang: string) => {
-  const months = {
-    FR: ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'],
-    EN: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-    AR: ['الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت', 'الأحد']
-  };
-  const data = [2, 5, 3, 8, 4, 6, 9];
-  const currentDays = (months as any)[lang] || months.EN;
-  return currentDays.map((name: string, i: number) => ({ name, value: data[i] }));
+// Build real chart data from applications — last 7 days
+const getRealChartData = (applications: any[]) => {
+  const days: { name: string; value: number }[] = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const label = d.toLocaleDateString('en-US', { weekday: 'short' });
+    const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000;
+    const dayEnd = dayStart + 86400;
+    const count = applications.filter(a => {
+      const ts = a.createdAt?.seconds;
+      return ts && ts >= dayStart && ts < dayEnd;
+    }).length;
+    days.push({ name: label, value: count });
+  }
+  return days;
 };
 
-export default function CandidatePanel({ onBack }: CandidatePanelProps) {
+export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProps) {
   const { lang, setLang, t, dir } = useTranslation();
+  const { company } = useCompanyInfo(db);
 
-  const [user, setUser] = useState(auth.currentUser);
-  const [authLoading, setAuthLoading] = useState(!auth.currentUser); // true until Firebase resolves
+  const [user, setUser] = useState<any>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [applications, setApplications] = useState<any[]>([]);
   const [selectedApp, setSelectedApp] = useState<any>(null);
   const [profile, setProfile] = useState<any>(null);
@@ -119,6 +129,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
   const [messages, setMessages] = useState<any[]>([]);
   const [savedJobs, setSavedJobs] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [profileChecked, setProfileChecked] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [cvFile, setCvFile] = useState<File | null>(null);
   const [cvUrl, setCvUrl] = useState<string>('');
@@ -134,25 +145,34 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
   const idInputRef = useRef<HTMLInputElement>(null);
   const [sendingMessage, setSendingMessage] = useState(false);
   const [newMessage, setNewMessage] = useState('');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'applications' | 'offers' | 'favorites' | 'messages' | 'profile' | 'settings'>('dashboard');
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [notifSettings, setNotifSettings] = useState({ jobAlerts: true, liveStatus: true, pushMsg: false });
+  const [showNotifPanel, setShowNotifPanel] = useState(false);
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
+  const [userNotifications, setUserNotifications] = useState<any[]>([]);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deletingAccount, setDeletingAccount] = useState(false);
   // ── Login mode states
-  const [loginTab, setLoginTab] = useState<'google' | 'email' | 'id'>('google');
+  // ── 🔧 MODE TEST — mettre à false avant la mise en prod ──
+  const TEST_MODE = true;
+  const TEST_CREDENTIALS = [
+    { label: 'Candidat test', phone: '77000001', password: 'Test2025!' },
+    { label: 'Recruteur test', phone: '77000002', password: 'Test2025!' },
+  ];
+
+  const [loginTab, setLoginTab] = useState<'google' | 'phone'>('phone');
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginConfirm, setLoginConfirm] = useState('');
   const [loginMode, setLoginMode] = useState<'signin' | 'signup' | 'reset'>('signin');
-  const [tempId, setTempId] = useState('');
   const [tempPassword, setTempPassword] = useState('');
+  const [loginPhone, setLoginPhone] = useState('');
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginResetSent, setLoginResetSent] = useState(false);
   const [gmailRequired, setGmailRequired] = useState(false);
-  const [gmailInput, setGmailInput] = useState('');
-  const [gmailSent, setGmailSent] = useState(false);
   const [isNewUser, setIsNewUser] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(1);
   const [savingOnboarding, setSavingOnboarding] = useState(false);
@@ -177,10 +197,40 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
   const [dynNationalities, setDynNationalities] = useState<{id:string; value:string; label:string}[]>([]);
   const [dynLanguagesList, setDynLanguagesList] = useState<{id:string; value:string; label:string}[]>([]);
 
+  const onSignOutRef = React.useRef(onSignOut);
+  const onBackRef = React.useRef(onBack);
+  useEffect(() => { onSignOutRef.current = onSignOut; onBackRef.current = onBack; });
+
   useEffect(() => {
-    const unsubscribeAuth = auth.onAuthStateChanged((u) => {
-      setUser(u);
-      setAuthLoading(false); // BUG 8 FIX: Firebase resolved
+    const unsubscribeAuth = auth.onAuthStateChanged(async (u) => {
+      console.log('[Auth] onAuthStateChanged:', u ? u.email || u.uid : 'null');
+      if (u) {
+        try {
+          const snap = await getDocs(query(collection(db, 'users'), where('firebaseUid', '==', u.uid)));
+          if (!snap.empty) {
+            const data = snap.docs[0].data();
+            const role = data.role;
+            // Déconnecter si pas candidat
+            if (role && role !== 'candidate') {
+              await signOut(auth); setUser(null); setAuthLoading(false); return;
+            }
+            // Déconnecter si compte vide (pas de fullName ni phone)
+            const hasValidData = !!(data.fullName && (data.phone || data.email));
+            if (!hasValidData) {
+              console.log('[Auth] Account has no data — signing out');
+              await signOut(auth); setUser(null); setAuthLoading(false); return;
+            }
+          } else {
+            // Pas de document Firestore → compte Firebase orphelin → déconnecter
+            console.log('[Auth] No Firestore user doc — signing out orphan account');
+            await signOut(auth); setUser(null); setAuthLoading(false); return;
+          }
+        } catch (_) {}
+        setUser(u);
+      } else {
+        setUser(null);
+      }
+      setAuthLoading(false);
     });
     return () => unsubscribeAuth();
   }, []);
@@ -205,7 +255,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
     // Applications listen
     const qApps = query(
       collection(db, 'applications'),
-      where('userId', '==', user.uid),
+      where('userId', '==', user?.uid),
       orderBy('createdAt', 'desc')
     );
 
@@ -217,7 +267,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
     });
 
     // Profile listen
-    const unsubscribeProfile = onSnapshot(doc(db, 'candidateProfiles', user.uid), async (docSnap) => {
+    const unsubscribeProfile = onSnapshot(doc(db, 'candidateProfiles', user?.uid), async (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
         setProfile({ id: docSnap.id, ...data });
@@ -227,64 +277,117 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
         setProfileForm(prev => ({
           ...prev,
           fullName: data.fullName || user.displayName || '',
-          nationality: data.nationality || 'Djiboutienne',
+          nationality: data.nationality || '',
           education: data.education || '',
           experience: data.experience || '',
           phone: data.phone || '',
           address: data.address || '',
           birthDate: data.birthDate || '',
-          languages: data.languages || 'Français, Somali, Afar',
+          languages: data.languages || '',
           gender: data.gender || 'M',
-          availability: data.availability || 'Immédiate'
+          availability: data.availability || 'Immediate'
         }));
+        const hasKeyData = !!(data.fullName && data.phone);
+        if (!data.profileComplete && !hasKeyData) {
+          // candidateProfiles exists but is empty shell — check users collection for real data
+          try {
+            const { getDocs, query: q2, collection: col2, where: wh } = await import('firebase/firestore');
+            const usersSnap = await getDocs(q2(col2(db, 'users'), wh('firebaseUid', '==', user?.uid)));
+            if (!usersSnap.empty) {
+              const uData = usersSnap.docs[0].data();
+              const uHasData = !!(uData.fullName && uData.phone);
+              if (uHasData) {
+                // Merge users data into profileForm and mark complete
+                setProfileForm(prev => ({
+                  ...prev,
+                  fullName: uData.fullName || prev.fullName,
+                  nationality: uData.nationality || prev.nationality,
+                  education: uData.education || prev.education,
+                  experience: uData.experience || prev.experience,
+                  phone: uData.phone || prev.phone,
+                  address: uData.address || prev.address,
+                  birthDate: uData.birthDate || prev.birthDate,
+                  languages: uData.languages || prev.languages,
+                  gender: uData.gender || prev.gender,
+                  availability: uData.availability || prev.availability,
+                }));
+                if (uData.cvUrl) { setCvUrl(uData.cvUrl); setCvFileName(uData.cvFileName || 'CV.pdf'); }
+                // Update candidateProfiles with real data
+                updateDoc(doc(db, 'candidateProfiles', user?.uid), {
+                  ...uData,
+                  profileComplete: true,
+                  userId: user?.uid,
+                  firebaseUid: user?.uid,
+                }).catch(() => {});
+                setIsNewUser(false);
+                setProfileChecked(true);
+                return;
+              }
+            }
+          } catch (e) { console.warn('users fallback failed:', e); }
+          // Truly empty — show onboarding
+          setIsNewUser(true);
+          setOnboardingStep(1);
+        } else {
+          setIsNewUser(false);
+          if (!data.profileComplete && hasKeyData) {
+            updateDoc(doc(db, 'candidateProfiles', user?.uid), { profileComplete: true }).catch(() => {});
+          }
+        }
+        setProfileChecked(true);
       } else {
-        // Chercher aussi dans la collection 'candidates' (compte créé par admin)
         try {
-          const { getDoc } = await import('firebase/firestore');
-          const candidateDoc = await getDoc(doc(db, 'candidates', user.uid));
-          if (candidateDoc.exists()) {
-            const data = candidateDoc.data();
+          const { getDocs, query: q2, collection: col2, where: wh } = await import('firebase/firestore');
+          const usersSnap = await getDocs(q2(col2(db, 'users'), wh('firebaseUid', '==', user?.uid)));
+          if (!usersSnap.empty) {
+            const data = usersSnap.docs[0].data();
+            const hasData = !!(data.fullName || data.nationality || data.phone);
             setProfileForm(prev => ({
               ...prev,
               fullName: data.fullName || data.displayName || user.displayName || '',
-              nationality: data.nationality || 'Djiboutienne',
+              nationality: data.nationality || '',
               education: data.education || '',
               experience: data.experience || '',
               phone: data.phone || '',
               address: data.address || '',
               birthDate: data.birthDate || '',
-              languages: data.languages || 'Français, Somali, Afar',
+              languages: data.languages || '',
               gender: data.gender || 'M',
-              availability: data.availability || 'Immédiate'
+              availability: data.availability || 'Immediate',
             }));
-            return;
+            if (data.cvUrl) { setCvUrl(data.cvUrl); setCvFileName(data.cvFileName || 'CV.pdf'); }
+            if (hasData) {
+              const { setDoc: sd2, doc: d3, serverTimestamp: st2 } = await import('firebase/firestore');
+              await sd2(d3(db, 'candidateProfiles', user?.uid), {
+                ...data, userId: user?.uid, firebaseUid: user?.uid,
+                profileComplete: true, createdAt: st2(),
+              }).catch(() => {});
+              // Set profile so photoUrl is available for avatar display
+              setProfile({ id: usersSnap.docs[0].id, ...data });
+              setIsNewUser(false);
+              setProfileChecked(true);
+              return;
+            }
           }
-        } catch (e) {}
-        // Nouveau utilisateur — déclencher l'onboarding
+        } catch (e) { console.warn('users lookup failed:', e); }
         setProfileForm(prev => ({
-          ...prev,
-          fullName: user.displayName || '',
-          nationality: 'Djiboutienne',
-          education: '',
-          experience: '',
-          phone: '',
-          address: '',
-          birthDate: '',
-          languages: 'Français, Somali, Afar',
-          gender: 'M',
-          availability: 'Immédiate'
+          ...prev, fullName: user.displayName || '',
+          nationality: '', education: '', experience: '',
+          phone: '', address: '', birthDate: '',
+          languages: '', gender: 'M', availability: 'Immediate',
         }));
         setIsNewUser(true);
         setOnboardingStep(1);
+        setProfileChecked(true);
       }
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `candidateProfiles/${user.uid}`);
+      handleFirestoreError(error, OperationType.GET, `candidateProfiles/${user?.uid}`);
     });
 
     // Messages listen
     const qMessages = query(
       collection(db, 'messages'),
-      where('participantIds', 'array-contains', user.uid),
+      where('participantIds', 'array-contains', user?.uid),
       orderBy('createdAt', 'asc')
     );
     const unsubscribeMessages = onSnapshot(qMessages, (snapshot) => {
@@ -301,11 +404,24 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
       handleFirestoreError(error, OperationType.LIST, 'jobs');
     });
 
+    // Notifications temps réel pour le candidat
+    const qUserNotifs = query(
+      collection(db, 'notifications'),
+      where('userId', '==', user?.uid),
+      orderBy('createdAt', 'desc')
+    );
+    const unsubscribeNotifs = onSnapshot(qUserNotifs, (snapshot) => {
+      const notifs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      setUserNotifications(notifs);
+      setUnreadNotifCount(notifs.filter((n: any) => !n.read).length);
+    }, () => {});
+
     return () => {
       unsubscribeApps();
       unsubscribeProfile();
       unsubscribeMessages();
       unsubscribeJobs();
+      unsubscribeNotifs();
     };
   }, [user]);
 
@@ -313,9 +429,9 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
     e.preventDefault();
     if (!user) return;
     setSavingProfile(true);
-    const profilePath = `candidateProfiles/${user.uid}`;
+    const profilePath = `candidateProfiles/${user?.uid}`;
     try {
-      await setDoc(doc(db, 'candidateProfiles', user.uid), {
+      await setDoc(doc(db, 'candidateProfiles', user?.uid), {
         ...profileForm,
         email: user.email,
         ...(cvUrl && { cvUrl, cvFileName }),
@@ -323,7 +439,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
         updatedAt: serverTimestamp()
       }, { merge: true });
       // Sync to users collection for admin visibility
-      await updateDoc(doc(db, 'users', user.uid), {
+      await updateDoc(doc(db, 'users', user?.uid), {
         displayName: profileForm.fullName,
         fullName: profileForm.fullName,
         phone: profileForm.phone || '',
@@ -347,7 +463,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
     setCvUploadProgress(0);
     try {
       const storage = getStorage();
-      const storageRef = ref(storage, `cvs/${user.uid}/${file.name}`);
+      const storageRef = ref(storage, `cvs/${user?.uid}/${file.name}`);
       const uploadTask = uploadBytesResumable(storageRef, file);
       uploadTask.on('state_changed',
         (snapshot) => {
@@ -364,12 +480,12 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
           setCvUrl(downloadURL);
           setCvFileName(file.name);
           // Save immediately to Firestore
-          await updateDoc(doc(db, 'candidateProfiles', user.uid), {
+          await updateDoc(doc(db, 'candidateProfiles', user?.uid), {
             cvUrl: downloadURL,
             cvFileName: file.name,
             cvUpdatedAt: serverTimestamp(),
           }).catch(() => {});
-          await updateDoc(doc(db, 'users', user.uid), {
+          await updateDoc(doc(db, 'users', user?.uid), {
             cvUrl: downloadURL,
             cvFileName: file.name,
           }).catch(() => {});
@@ -390,7 +506,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
     setIdUploadProgress(0);
     try {
       const storage = getStorage();
-      const storageRef = ref(storage, `ids/${user.uid}/${file.name}`);
+      const storageRef = ref(storage, `ids/${user?.uid}/${file.name}`);
       const uploadTask = uploadBytesResumable(storageRef, file);
       uploadTask.on('state_changed',
         (snapshot) => {
@@ -405,13 +521,13 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
           const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
           setIdUrl(downloadURL);
           setIdFileName(file.name);
-          await updateDoc(doc(db, 'candidateProfiles', user.uid), {
+          await updateDoc(doc(db, 'candidateProfiles', user?.uid), {
             idUrl: downloadURL,
             idFileName: file.name,
             idDocType,
             idUpdatedAt: serverTimestamp(),
           }).catch(() => {});
-          await updateDoc(doc(db, 'users', user.uid), {
+          await updateDoc(doc(db, 'users', user?.uid), {
             idUrl: downloadURL,
             idFileName: file.name,
             idDocType,
@@ -431,17 +547,17 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
     if (!user) return;
     setSavingOnboarding(true);
     try {
-      await setDoc(doc(db, 'candidateProfiles', user.uid), {
+      await setDoc(doc(db, 'candidateProfiles', user?.uid), {
         ...profileForm,
         email: user.email,
-        userId: user.uid,
+        userId: user?.uid,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         profileComplete: true,
       }, { merge: true });
       // Mettre à jour aussi la collection users pour que l'admin voit le profil complet
       const { doc: d2, setDoc: sd, getDoc: gd } = await import('firebase/firestore');
-      await sd(d2(db, 'users', user.uid), {
+      await sd(d2(db, 'users', user?.uid), {
         displayName: profileForm.fullName,
         phone: profileForm.phone || '',
         profileComplete: true,
@@ -462,7 +578,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
     if (!user) return;
     try {
       await addDoc(collection(db, 'applications'), {
-        userId: user.uid,
+        userId: user?.uid,
         jobId: job.id,
         jobTitle: job.title,
         sector: job.sector,
@@ -499,9 +615,9 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
       ? savedJobs.filter(id => id !== jobId)
       : [...savedJobs, jobId];
     
-    const profilePath = `candidateProfiles/${user.uid}`;
+    const profilePath = `candidateProfiles/${user?.uid}`;
     try {
-      await setDoc(doc(db, 'candidateProfiles', user.uid), {
+      await setDoc(doc(db, 'candidateProfiles', user?.uid), {
         savedJobs: newSaved
       }, { merge: true });
     } catch (error) {
@@ -516,9 +632,9 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
     try {
       await addDoc(collection(db, 'messages'), {
         text: newMessage,
-        senderId: user.uid,
+        senderId: user?.uid,
         senderName: profileForm.fullName || user.displayName || 'Candidat',
-        participantIds: [user.uid, 'admin'], // Simple chat with admin/team
+        participantIds: [user?.uid, 'admin'], // Simple chat with admin/team
         createdAt: serverTimestamp()
       });
       setNewMessage('');
@@ -633,6 +749,9 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
       setLoginError('');
       // Show verification message
       setLoginResetSent(true); // reuse this state to show success message
+      // Sécurité : ne jamais garder le mot de passe en mémoire après création du compte
+      setLoginPassword('');
+      setLoginConfirm('');
     } catch (error: any) {
       const codes: Record<string, string> = {
         'auth/email-already-in-use': 'Cet email est déjà utilisé.',
@@ -653,6 +772,8 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
     try {
       await sendPasswordResetEmail(auth, loginEmail);
       setLoginResetSent(true);
+      setLoginPassword('');
+      setLoginConfirm('');
     } catch (error: any) {
       setLoginError('Email introuvable ou invalide.');
     } finally {
@@ -660,366 +781,37 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
     }
   };
 
-  const handleTempIdLogin = async (e: React.FormEvent) => {
+  const handlePhoneLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
-    if (!tempId || !tempPassword) { setLoginError(`Veuillez remplir l'identifiant et le mot de passe.`); return; }
-    if (!tempId.startsWith('VGM-')) { setLoginError('Format invalide. Exemple : VGM-2025-0034'); return; }
+    if (!loginPhone || !tempPassword) { setLoginError('Please fill in your phone number and password.'); return; }
+    const digits = loginPhone.replace(/[\s\-\+]/g, '').replace(/^253/, '');
+    if (!/^[0-9]{6,15}$/.test(digits)) { setLoginError('Invalid format. Example: 77310000 or +25377310000'); return; }
     setLoginLoading(true);
     try {
-      // Look up the temp email from Firestore
-      const q = query(collection(db, 'users'), where('tempId', '==', tempId));
-      const snap = await getDocs(q);
-      if (snap.empty) {
-        setLoginError('Identifiant VGM introuvable. Contactez Vedior GM.');
-        setLoginLoading(false);
-        return;
-      }
-      const userData = snap.docs[0].data();
-      const tempEmail = userData.tempEmail || `${tempId.toLowerCase()}@vediorgm.temp`;
-      await signInWithEmailAndPassword(auth, tempEmail, tempPassword);
-      // If first login, require Gmail confirmation
-      if (!userData.gmailConfirmed) {
-        setGmailRequired(true);
-      }
+      const authEmail = `${digits}@vediorgm.candidate`;
+      const cred = await signInWithEmailAndPassword(auth, authEmail, tempPassword);
+      try {
+        const userSnap = await getDocs(query(collection(db, 'users'), where('firebaseUid', '==', cred.user.uid)));
+        if (!userSnap.empty) {
+          const uData = userSnap.docs[0].data();
+          const hasRealEmail = uData.email && !uData.email.endsWith('@vediorgm.candidate');
+          if (!uData.gmailConfirmed && hasRealEmail) { setGmailRequired(true); }
+          else if (!uData.gmailConfirmed) { await updateDoc(userSnap.docs[0].ref, { gmailConfirmed: true }).catch(() => {}); }
+        }
+      } catch (_) {}
     } catch (error: any) {
       const codes: Record<string, string> = {
-        'auth/wrong-password': 'Mot de passe incorrect.',
-        'auth/invalid-credential': 'Identifiant ou mot de passe incorrect.',
-        'auth/too-many-requests': 'Trop de tentatives. Réessayez plus tard.',
+        'auth/wrong-password': 'Incorrect password.',
+        'auth/invalid-credential': 'Incorrect phone number or password.',
+        'auth/user-not-found': 'No account found. Please contact Vedior GM.',
+        'auth/too-many-requests': 'Too many attempts. Please try again later.',
       };
-      setLoginError(codes[error.code] || 'Erreur de connexion. Vérifiez vos identifiants.');
-    } finally {
-      setLoginLoading(false);
-    }
-  };
-
-  const handleGmailConfirm = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!gmailInput.includes('@')) { setLoginError('Email invalide.'); return; }
-    setLoginLoading(true);
-    try {
-      await sendPasswordResetEmail(auth, gmailInput);
-      setGmailSent(true);
-      // Update Firestore
-      if (auth.currentUser) {
-        const q = query(collection(db, 'users'), where('tempId', '==', tempId));
-        const snap = await getDocs(q);
-        if (!snap.empty) {
-          const { updateDoc: ud, doc: d } = await import('firebase/firestore');
-          await ud(d(db, 'users', snap.docs[0].id), { gmailPending: gmailInput });
-        }
-      }
-    } catch (err) {
-      setLoginError(`Erreur lors de l'envoi. Vérifiez votre email.`);
-    } finally {
-      setLoginLoading(false);
-    }
-  };
-
-  const logout = () => signOut(auth).then(() => onBack());
-
-  // Garde : traductions pas encore disponibles
-  if (!t || !t.admin) return null;
-
-  // BUG 8 FIX: Show loading screen while Firebase resolves auth state
-  if (authLoading) {
-    return (
-      <div style={{ position: 'fixed', inset: 0, backgroundColor: '#0A192F', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ width: 48, height: 48, border: '4px solid rgba(249,115,22,0.3)', borderTop: '4px solid #f97316', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto 16px' }} />
-          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-          <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: 11, fontWeight: 700, letterSpacing: '0.2em', textTransform: 'uppercase' }}>Chargement...</p>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Gmail confirmation screen (after ID login)
-  if (user && gmailRequired && !gmailSent) {
-    return (
-      <div className="min-h-screen bg-navy flex items-center justify-center p-6">
-        <div className="absolute inset-0 opacity-20 pointer-events-none overflow-hidden">
-          <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-orange rounded-full blur-[120px]" />
-          <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-blue-500 rounded-full blur-[120px]" />
-        </div>
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-          className="bg-white rounded-[3rem] p-12 max-w-md w-full shadow-2xl relative z-10 text-center">
-          <div className="mb-6 flex justify-center"><Logo /></div>
-          <div className="w-16 h-16 bg-orange/10 rounded-full flex items-center justify-center mx-auto mb-6">
-            <ShieldCheck size={32} className="text-orange" />
-          </div>
-          <h2 className="text-2xl font-black text-navy uppercase italic tracking-tighter mb-3">
-            {lang === 'FR' ? 'Sécurisez votre compte' : 'Secure your account'}
-          </h2>
-          <p className="text-navy/50 font-bold mb-8 text-sm leading-relaxed">
-            {lang === 'FR'
-              ? `Votre compte a été créé avec l'identifiant ${tempId}. Confirmez votre Gmail pour sécuriser l'accès.`
-              : `Your account was created with ID ${tempId}. Confirm your Gmail to secure access.`}
-          </p>
-          {/* Gmail button */}
-          <button onClick={login}
-            className="w-full bg-navy text-white py-4 rounded-2xl font-black uppercase tracking-widest flex items-center justify-center gap-3 hover:bg-orange transition-all shadow-xl shadow-navy/10 active:scale-95 mb-4">
-            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5 bg-white rounded-full p-0.5" alt="Google" />
-            {lang === 'FR' ? 'Confirmer avec Google' : 'Confirm with Google'}
-          </button>
-          {/* Divider */}
-          <div className="flex items-center gap-3 my-4">
-            <div className="flex-1 h-px bg-navy/10" />
-            <span className="text-[10px] font-black text-navy/30 uppercase tracking-widest">{lang === 'FR' ? 'ou' : 'or'}</span>
-            <div className="flex-1 h-px bg-navy/10" />
-          </div>
-          <form onSubmit={handleGmailConfirm} className="text-left">
-            <p className="text-[10px] font-black uppercase tracking-widest text-navy/40 mb-2">
-              {lang === 'FR' ? 'Entrez votre adresse email' : 'Enter your email address'}
-            </p>
-            <input type="email" placeholder="votre.email@gmail.com" value={gmailInput}
-              onChange={e => setGmailInput(e.target.value)}
-              className="w-full border-2 border-navy/10 rounded-2xl px-5 py-4 font-bold text-sm outline-none focus:border-orange mb-3" />
-            {loginError && <p className="text-red-500 text-xs font-bold mb-3">⚠️ {loginError}</p>}
-            <button type="submit" disabled={loginLoading}
-              className="w-full bg-orange text-white py-4 rounded-2xl font-black uppercase tracking-widest hover:bg-navy transition-all shadow-xl shadow-orange/20 active:scale-95 disabled:opacity-50">
-              {loginLoading ? '...' : lang === 'FR' ? 'Envoyer le lien →' : 'Send link →'}
-            </button>
-          </form>
-          <button onClick={() => setGmailRequired(false)} className="mt-6 text-[10px] font-black uppercase tracking-[0.2em] text-navy/30 hover:text-orange transition-colors">
-            {lang === 'FR' ? `Ignorer pour l'instant` : 'Skip for now'}
-          </button>
-        </motion.div>
-      </div>
-    );
-  }
-
-  // ── Gmail confirmation sent screen
-  if (user && gmailRequired && gmailSent) {
-    return (
-      <div className="min-h-screen bg-navy flex items-center justify-center p-6">
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-          className="bg-white rounded-[3rem] p-12 max-w-md w-full shadow-2xl relative z-10 text-center">
-          <div className="mb-6 flex justify-center"><Logo /></div>
-          <div className="w-16 h-16 bg-green-50 rounded-full flex items-center justify-center mx-auto mb-6">
-            <CheckCircle size={32} className="text-green-500" />
-          </div>
-          <h2 className="text-2xl font-black text-navy uppercase italic tracking-tighter mb-3">
-            {lang === 'FR' ? 'Email envoyé !' : 'Email sent!'}
-          </h2>
-          <p className="text-navy/50 font-bold mb-8 text-sm leading-relaxed">
-            {lang === 'FR'
-              ? `Un lien de confirmation a été envoyé à ${gmailInput}. Vérifiez votre boîte mail.`
-              : `A confirmation link has been sent to ${gmailInput}. Check your inbox.`}
-          </p>
-          <button onClick={() => { setGmailRequired(false); setGmailSent(false); }}
-            className="w-full bg-navy text-white py-4 rounded-2xl font-black uppercase tracking-widest hover:bg-orange transition-all">
-            {lang === 'FR' ? 'Accéder à mon espace →' : 'Access my space →'}
-          </button>
-        </motion.div>
-      </div>
-    );
-  }
-
-  if (!user) {
-    const N = '#050E1A';
-    const O = '#F97316';
-    const W = '#FFFFFF';
-
-    const iStyle: React.CSSProperties = {
-      width: '100%', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(249,115,22,0.2)',
-      color: W, padding: '15px 20px 15px 48px', borderRadius: 14, outline: 'none',
-      fontSize: 15, fontWeight: 500, boxSizing: 'border-box', transition: 'border 0.2s',
-    };
-    const lStyle: React.CSSProperties = {
-      fontSize: 11, fontWeight: 800, color: 'rgba(255,255,255,0.5)',
-      textTransform: 'uppercase', letterSpacing: '1.5px', display: 'block', marginBottom: 8,
-    };
-    const tabLabel = lang === 'FR'
-      ? { google: 'Gmail', email: 'Email', id: 'ID VGM' }
-      : lang === 'EN'
-      ? { google: 'Gmail', email: 'Email', id: 'VGM ID' }
-      : { google: 'جيميل', email: 'بريد', id: 'هوية VGM' };
-
-    return (
-      <div style={{ position: 'fixed', inset: 0, background: N, zIndex: 200, overflow: 'hidden', fontFamily: 'system-ui, sans-serif' }}>
-
-        {/* Background grid */}
-        <div style={{ position: 'absolute', inset: 0, backgroundImage: 'linear-gradient(rgba(249,115,22,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(249,115,22,0.03) 1px, transparent 1px)', backgroundSize: '50px 50px', pointerEvents: 'none' }} />
-        <div style={{ position: 'absolute', top: '-20%', left: '-10%', width: 700, height: 700, background: 'radial-gradient(circle, rgba(249,115,22,0.12), transparent 70%)', pointerEvents: 'none' }} />
-        <div style={{ position: 'absolute', bottom: '-20%', right: '-10%', width: 600, height: 600, background: 'radial-gradient(circle, rgba(0,87,168,0.2), transparent 70%)', pointerEvents: 'none' }} />
-
-        <div style={{ position: 'relative', zIndex: 1, minHeight: '100vh', display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
-
-          {/* ══ LEFT PANEL ══ */}
-          <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '64px 72px' }}>
-            <div style={{ marginBottom: 52 }}>
-              <Logo inverted size="lg" />
-              <div style={{ width: 60, height: 3, background: `linear-gradient(90deg, ${O}, transparent)`, borderRadius: 2, marginTop: 12 }} />
-            </div>
-
-            <h1 style={{ fontSize: 44, fontWeight: 900, color: W, lineHeight: 1.1, letterSpacing: '-2px', marginBottom: 20 }}>
-              {lang === 'FR' ? <><span>Trouvez votre</span><br /><span style={{ color: O }}>prochain emploi</span></> :
-               lang === 'EN' ? <><span>Find your</span><br /><span style={{ color: O }}>next opportunity</span></> :
-               <><span>ابحث عن</span><br /><span style={{ color: O }}>فرصتك القادمة</span></>}
-            </h1>
-            <p style={{ fontSize: 15, color: 'rgba(255,255,255,0.45)', lineHeight: 1.8, maxWidth: 400, marginBottom: 48 }}>
-              {lang === 'FR' ? "Accédez aux meilleures offres d'emploi à Djibouti. Déposez votre CV et laissez nos experts vous accompagner." :
-               lang === 'EN' ? 'Access the best job offers in Djibouti. Upload your CV and let our experts guide you.' :
-               'الوصول إلى أفضل عروض العمل في جيبوتي. ارفع سيرتك الذاتية ودع خبراءنا يرشدونك.'}
-            </p>
-
-            {/* Visual dots */}
-            <div style={{ position: 'relative', marginBottom: 48, height: 100, overflow: 'hidden' }}>
-              <svg viewBox="0 0 500 100" style={{ width: '100%', opacity: 0.15 }}>
-                {Array.from({length: 60}).map((_, i) => (
-                  <circle key={i} cx={(i % 15) * 34 + 8} cy={Math.floor(i / 15) * 26 + 8} r={1.5} fill={O} opacity={i % 3 === 0 ? 1 : 0.3} />
-                ))}
-                <line x1="80" y1="50" x2="220" y2="30" stroke={O} strokeWidth="0.8" opacity="0.5" strokeDasharray="4,4" />
-                <line x1="220" y1="30" x2="380" y2="60" stroke={O} strokeWidth="0.8" opacity="0.5" strokeDasharray="4,4" />
-                <circle cx="80" cy="50" r="5" fill={O} opacity="0.9" />
-                <circle cx="220" cy="30" r="5" fill={O} opacity="0.9" />
-                <circle cx="380" cy="60" r="5" fill={O} opacity="0.9" />
-              </svg>
-            </div>
-
-            {/* Stats */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 40 }}>
-              {([
-                ['500+', lang === 'FR' ? 'Talents placés' : lang === 'EN' ? 'Placed talents' : 'موهبة موظفة', '👥'],
-                ['15+',  lang === 'FR' ? "Ans d'expérience" : lang === 'EN' ? 'Years exp.' : 'سنة خبرة', '💼'],
-                ['🇩🇯',  'Djibouti', '📍'],
-              ] as [string,string,string][]).map(([n, l, icon]) => (
-                <div key={l} style={{ background: 'rgba(249,115,22,0.06)', border: '1px solid rgba(249,115,22,0.15)', borderRadius: 16, padding: '18px 16px' }}>
-                  <div style={{ fontSize: 11, marginBottom: 4 }}>{icon}</div>
-                  <div style={{ fontWeight: 900, fontSize: 22, color: O, lineHeight: 1 }}>{n}</div>
-                  <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 4 }}>{l}</div>
-                </div>
-              ))}
-            </div>
-
-            {/* Trust badges */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {(lang === 'FR'
-                ? ['✅ Candidature gratuite et confidentielle', '✅ Suivi de dossier en temps réel', '✅ Experts RH locaux dédiés']
-                : lang === 'EN'
-                ? ['✅ Free and confidential application', '✅ Real-time application tracking', '✅ Dedicated local HR experts']
-                : ['✅ تقديم مجاني وسري', '✅ متابعة الملف في الوقت الفعلي', '✅ خبراء موارد بشرية متخصصون']
-              ).map(label => (
-                <div key={label} style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13, fontWeight: 500 }}>{label}</div>
-              ))}
-            </div>
-
-            <div style={{ marginTop: 'auto', paddingTop: 40, color: 'rgba(255,255,255,0.2)', fontSize: 12 }}>
-              © 2026 Vedior GM — {lang === 'FR' ? 'Plateforme de recrutement à Djibouti' : lang === 'EN' ? 'Recruitment platform in Djibouti' : 'منصة التوظيف في جيبوتي'}
-            </div>
-          </div>
-
-          {/* ══ RIGHT PANEL ══ */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 60px' }}>
-            <div style={{ background: 'rgba(255,255,255,0.04)', backdropFilter: 'blur(32px)', border: '1px solid rgba(249,115,22,0.15)', borderRadius: 28, padding: '48px 48px', width: '100%', maxWidth: 540, boxShadow: '0 0 80px rgba(249,115,22,0.06), 0 40px 100px rgba(0,0,0,0.6)', position: 'relative', overflow: 'hidden' }}>
-              <div style={{ position: 'absolute', top: 0, left: '10%', right: '10%', height: 1, background: `linear-gradient(90deg, transparent, ${O}, transparent)` }} />
-              <div style={{ position: 'absolute', top: -80, left: '50%', transform: 'translateX(-50%)', width: 300, height: 200, background: 'radial-gradient(circle, rgba(249,115,22,0.12), transparent 70%)', pointerEvents: 'none' }} />
-
-              {/* Header */}
-              <div style={{ textAlign: 'center', marginBottom: 32 }}>
-                <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 16 }}><Logo inverted size="lg" /></div>
-                <h2 style={{ fontSize: 24, fontWeight: 900, color: W, letterSpacing: '-0.5px', marginBottom: 8 }}>
-                  {lang === 'FR' ? <span>ESPACE <span style={{ color: O }}>CANDIDAT</span></span> :
-                   lang === 'EN' ? <span>CANDIDATE <span style={{ color: O }}>SPACE</span></span> :
-                   <span><span style={{ color: O }}>مساحة</span> المرشح</span>}
-                </h2>
-                <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', lineHeight: 1.6 }}>
-                  {lang === 'FR' ? 'Choisissez votre mode de connexion' :
-                   lang === 'EN' ? 'Choose your login method' : 'اختر طريقة تسجيل الدخول'}
-                </p>
-              </div>
-
-              {/* Tabs */}
-              <div style={{ display: 'flex', background: 'rgba(255,255,255,0.04)', borderRadius: 14, padding: 4, marginBottom: 28, gap: 4 }}>
-                {(['google', 'id'] as const).map(tab => (
-                  <button key={tab} onClick={() => { setLoginTab(tab); setLoginError(''); setLoginResetSent(false); }}
-                    style={{ flex: 1, padding: '11px 8px', borderRadius: 10, fontWeight: 900, fontSize: 10, textTransform: 'uppercase', letterSpacing: '1px', border: 'none', cursor: 'pointer', transition: 'all 0.2s', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: loginTab === tab ? O : 'transparent', color: loginTab === tab ? W : 'rgba(255,255,255,0.3)', boxShadow: loginTab === tab ? '0 4px 20px rgba(249,115,22,0.35)' : 'none' }}>
-                    <span>{tab === 'google' ? '🔑' : '🪪'}</span>
-                    {tabLabel[tab]}
-                  </button>
-                ))}
-              </div>
-
-              {loginError && (
-                <div style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#f87171', borderRadius: 12, padding: '13px 16px', marginBottom: 20, fontSize: 13, fontWeight: 700 }}>⚠️ {loginError}</div>
-              )}
-
-              {/* GOOGLE */}
-              {loginTab === 'google' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                  <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13, fontWeight: 500, textAlign: 'center', lineHeight: 1.6 }}>
-                    {lang === 'FR' ? 'Connexion rapide et sécurisée avec votre compte Google.' : lang === 'EN' ? 'Quick and secure login with your Google account.' : 'تسجيل دخول سريع وآمن بحساب Google.'}
-                  </p>
-                  <button onClick={login} disabled={loginLoading}
-                    style={{ width: '100%', background: W, color: '#0A192F', padding: '18px', borderRadius: 14, fontWeight: 900, fontSize: 14, textTransform: 'uppercase', letterSpacing: '2px', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14, boxShadow: '0 8px 32px rgba(255,255,255,0.15)', transition: 'all 0.3s', opacity: loginLoading ? 0.6 : 1 }}>
-                    <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" style={{ width: 22, height: 22 }} alt="Google" />
-                    {loginLoading ? '...' : lang === 'FR' ? 'Continuer avec Google' : lang === 'EN' ? 'Continue with Google' : 'المتابعة مع Google'}
-                  </button>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '4px 0' }}>
-                    <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.08)' }} />
-                    <span style={{ color: 'rgba(255,255,255,0.2)', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 2 }}>
-                      {lang === 'FR' ? 'ou' : lang === 'EN' ? 'or' : 'أو'}
-                    </span>
-                    <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.08)' }} />
-                  </div>
-                  <button onClick={() => setLoginTab('id')}
-                    style={{ width: '100%', padding: '13px', borderRadius: 12, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.4)', fontSize: 12, fontWeight: 700, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: 1 }}>
-                    🪪 {lang === 'FR' ? 'Connexion avec ID VGM' : lang === 'EN' ? 'Login with VGM ID' : 'دخول بهوية VGM'}
-                  </button>
-                </div>
-              )}
+      setLoginError(codes[error.code] || `Login failed (${error.code}). Please contact Vedior GM.`);
+    } finally { setLoginLoading(false); }
+  };;;;
 
 
-
-              {/* ID VGM */}
-              {loginTab === 'id' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                  <div style={{ background: 'rgba(249,115,22,0.08)', border: '1px solid rgba(249,115,22,0.2)', borderRadius: 14, padding: '16px 20px' }}>
-                    <p style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '1.5px', color: O, marginBottom: 6 }}>
-                      🪪 {lang === 'FR' ? 'Identifiant fourni par Vedior GM' : lang === 'EN' ? 'ID provided by Vedior GM' : 'هوية مقدمة من Vedior GM'}
-                    </p>
-                    <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12, fontWeight: 500, lineHeight: 1.6 }}>
-                      {lang === 'FR' ? "Votre ID et mot de passe vous ont été remis par l'agence. Format : VGM-2025-XXXX" : lang === 'EN' ? 'Your ID and password were provided by the agency. Format: VGM-2025-XXXX' : 'هويتك وكلمة مرورك قُدِّمت من الوكالة. الصيغة: VGM-2025-XXXX'}
-                    </p>
-                  </div>
-                  <div>
-                    <label style={lStyle}>{lang === 'FR' ? 'Identifiant VGM' : lang === 'EN' ? 'VGM ID' : 'هوية VGM'}</label>
-                    <div style={{ position: 'relative' }}>
-                      <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 18 }}>🪪</span>
-                      <input placeholder="VGM-2025-0034" value={tempId} onChange={e => setTempId(e.target.value.toUpperCase())} style={{ ...iStyle, fontFamily: 'monospace', letterSpacing: 2 }} onFocus={e => e.target.style.borderColor = O} onBlur={e => e.target.style.borderColor = 'rgba(249,115,22,0.2)'} />
-                    </div>
-                  </div>
-                  <div>
-                    <label style={lStyle}>{lang === 'FR' ? 'Mot de passe temporaire' : lang === 'EN' ? 'Temporary password' : 'كلمة المرور المؤقتة'}</label>
-                    <div style={{ position: 'relative' }}>
-                      <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 18 }}>🔒</span>
-                      <input type="password" placeholder="••••••••" value={tempPassword} onChange={e => setTempPassword(e.target.value)} style={iStyle} onFocus={e => e.target.style.borderColor = O} onBlur={e => e.target.style.borderColor = 'rgba(249,115,22,0.2)'} />
-                    </div>
-                  </div>
-                  <button onClick={handleTempIdLogin} disabled={loginLoading} style={{ width: '100%', background: `linear-gradient(135deg, ${O}, #ea580c)`, color: W, padding: '17px', borderRadius: 14, fontWeight: 900, fontSize: 14, textTransform: 'uppercase', letterSpacing: '2px', border: 'none', cursor: 'pointer', opacity: loginLoading ? 0.6 : 1, boxShadow: '0 8px 32px rgba(249,115,22,0.35)', transition: 'all 0.3s' }}>
-                    {loginLoading ? '...' : lang === 'FR' ? 'ACCÉDER À MON ESPACE →' : lang === 'EN' ? 'ACCESS MY SPACE →' : 'الوصول إلى مساحتي →'}
-                  </button>
-                  <p style={{ textAlign: 'center', fontSize: 12, color: 'rgba(255,255,255,0.25)', fontWeight: 600 }}>
-                    {lang === 'FR' ? 'Identifiant perdu ? ' : lang === 'EN' ? 'Lost your ID? ' : 'فقدت هويتك؟ '}
-                    <span style={{ color: O, cursor: 'pointer' }}>{lang === 'FR' ? 'Contactez Vedior GM' : lang === 'EN' ? 'Contact Vedior GM' : 'اتصل بـ Vedior GM'}</span>
-                  </p>
-                </div>
-              )}
-
-              <button onClick={onBack}
-                style={{ width: '100%', marginTop: 24, background: 'none', border: 'none', color: 'rgba(255,255,255,0.2)', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '2px', cursor: 'pointer', transition: 'color 0.2s' }}
-                onMouseEnter={e => (e.target as HTMLElement).style.color = W}
-                onMouseLeave={e => (e.target as HTMLElement).style.color = 'rgba(255,255,255,0.2)'}>
-                ← {lang === 'FR' ? 'Retour au portail' : lang === 'EN' ? 'Back to portal' : 'العودة إلى البوابة'}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
   const stats = {
     total: applications.length,
     new: applications.filter(a => a.status === 'new' || !a.status).length,
@@ -1031,7 +823,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
   // ══════════════════════════════════════════
   // ONBOARDING — Nouvel utilisateur
   // ══════════════════════════════════════════
-  if (user && isNewUser) {
+  if (user && profileChecked && isNewUser) {
     const steps = [
       { num: 1, label: lang === 'FR' ? 'Identité' : 'Identity' },
       { num: 2, label: lang === 'FR' ? 'Formation' : 'Education' },
@@ -1040,10 +832,10 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
     ];
 
     return (
-      <div style={{ minHeight: '100vh', backgroundColor: '#0A192F', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
+      <div style={{ minHeight: '100vh', backgroundColor: '#0A192F', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px', overflowX: 'hidden', position: 'relative' }}>
         {/* Blobs */}
-        <div style={{ position: 'absolute', top: 0, left: 0, width: 500, height: 500, backgroundColor: '#f97316', borderRadius: '50%', filter: 'blur(160px)', transform: 'translate(-50%,-50%)', opacity: 0.07, pointerEvents: 'none' }} />
-        <div style={{ position: 'absolute', bottom: 0, right: 0, width: 500, height: 500, backgroundColor: '#3b82f6', borderRadius: '50%', filter: 'blur(160px)', transform: 'translate(50%,50%)', opacity: 0.07, pointerEvents: 'none' }} />
+        <div style={{ position: 'absolute', top: 0, left: 0, width: '40vw', maxWidth: 500, height: 500, backgroundColor: '#f97316', borderRadius: '50%', filter: 'blur(160px)', transform: 'translate(-50%,-50%)', opacity: 0.07, pointerEvents: 'none' }} />
+        <div style={{ position: 'absolute', bottom: 0, right: 0, width: '40vw', maxWidth: 500, height: 500, backgroundColor: '#3b82f6', borderRadius: '50%', filter: 'blur(160px)', transform: 'translate(50%,50%)', opacity: 0.07, pointerEvents: 'none' }} />
 
         <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} style={{ width: '100%', maxWidth: '520px', position: 'relative', zIndex: 10 }}>
 
@@ -1093,14 +885,14 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                   <label style={{ color: 'rgba(255,255,255,0.4)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.15em', display: 'block', marginBottom: '8px' }}>
                     {lang === 'FR' ? 'Nom complet *' : 'Full name *'}
                   </label>
-                  <input value={profileForm.fullName} onChange={e => setProfileForm(p => ({...p, fullName: e.target.value}))}
+                  <input id="fullName" name="fullName" value={profileForm.fullName} onChange={e => setProfileForm(p => ({...p, fullName: e.target.value}))}
                     placeholder={lang === 'FR' ? 'Mohamed Ahmed Ali' : 'Mohamed Ahmed Ali'}
                     style={{ width: '100%', backgroundColor: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff', borderRadius: '14px', padding: '14px 18px', fontWeight: 700, fontSize: '14px', outline: 'none', boxSizing: 'border-box' }} />
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                   <div>
                     <label style={{ color: 'rgba(255,255,255,0.4)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.15em', display: 'block', marginBottom: '8px' }}>{lang === 'FR' ? 'Téléphone *' : 'Phone *'}</label>
-                    <input value={profileForm.phone} onChange={e => setProfileForm(p => ({...p, phone: e.target.value}))}
+                    <input id="phone" name="phone" value={profileForm.phone} onChange={e => setProfileForm(p => ({...p, phone: e.target.value}))}
                       placeholder="+253 77 XX XX XX"
                       style={{ width: '100%', backgroundColor: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff', borderRadius: '14px', padding: '14px 18px', fontWeight: 700, fontSize: '14px', outline: 'none', boxSizing: 'border-box' }} />
                   </div>
@@ -1133,13 +925,21 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                   </div>
                   <div>
                     <label style={{ color: 'rgba(255,255,255,0.4)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.15em', display: 'block', marginBottom: '8px' }}>{lang === 'FR' ? 'Date de naissance *' : 'Birth date *'}</label>
-                    <input type="date" value={profileForm.birthDate} onChange={e => setProfileForm(p => ({...p, birthDate: e.target.value}))}
+                    <input type="text" id="birthDate" name="birthDate" 
+                      value={profileForm.birthDate}
+                      onChange={e => {
+                        let v = e.target.value.replace(/[^0-9]/g, '');
+                        if (v.length >= 3) v = v.slice(0,2) + '/' + v.slice(2);
+                        if (v.length >= 6) v = v.slice(0,5) + '/' + v.slice(5,9);
+                        setProfileForm(p => ({...p, birthDate: v.slice(0,10)}));
+                      }}
+                      placeholder="jj/mm/aaaa" maxLength={10}
                       style={{ width: '100%', backgroundColor: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff', borderRadius: '14px', padding: '14px 18px', fontWeight: 700, fontSize: '13px', outline: 'none', boxSizing: 'border-box', colorScheme: 'dark' }} />
                   </div>
                 </div>
                 <div>
                   <label style={{ color: 'rgba(255,255,255,0.4)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.15em', display: 'block', marginBottom: '8px' }}>{lang === 'FR' ? 'Adresse / Quartier *' : 'Address / District *'}</label>
-                  <input value={profileForm.address} onChange={e => setProfileForm(p => ({...p, address: e.target.value}))}
+                  <input id="address" name="address" value={profileForm.address} onChange={e => setProfileForm(p => ({...p, address: e.target.value}))}
                     placeholder={lang === 'FR' ? 'Ex: Balbala, Djibouti Ville...' : 'Ex: Balbala, Djibouti City...'}
                     style={{ width: '100%', backgroundColor: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff', borderRadius: '14px', padding: '14px 18px', fontWeight: 700, fontSize: '14px', outline: 'none', boxSizing: 'border-box' }} />
                 </div>
@@ -1153,7 +953,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                   {lang === 'FR' ? '🎓 Formation & Expérience' : '🎓 Education & Experience'}
                 </p>
                 <div>
-                  <label style={{ color: 'rgba(255,255,255,0.4)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.15em', display: 'block', marginBottom: '8px' }}>{lang === 'FR' ? "Niveau d'études" : "Education level"}</label>
+                  <label style={{ color: 'rgba(255,255,255,0.4)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.15em', display: 'block', marginBottom: '8px' }}>{lang === 'FR' ? "Niveau d'études" : 'Education level'}</label>
                   <select required value={profileForm.education} onChange={e => setProfileForm(p => ({...p, education: e.target.value}))}
                     style={{ width: '100%', backgroundColor: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff', borderRadius: '14px', padding: '14px 18px', fontWeight: 700, fontSize: '14px', outline: 'none', boxSizing: 'border-box', colorScheme: 'dark' }}>
                     <option value="" style={{backgroundColor:'#0A192F'}}>{lang === 'FR' ? 'Sélectionner' : 'Select'}</option>
@@ -1166,7 +966,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                   </select>
                 </div>
                 <div>
-                  <label style={{ color: 'rgba(255,255,255,0.4)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.15em', display: 'block', marginBottom: '8px' }}>{lang === 'FR' ? "Années d'expérience" : "Years of experience"}</label>
+                  <label style={{ color: 'rgba(255,255,255,0.4)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.15em', display: 'block', marginBottom: '8px' }}>{lang === 'FR' ? "Années d'expérience" : 'Years of experience'}</label>
                   <select required value={profileForm.experience} onChange={e => setProfileForm(p => ({...p, experience: e.target.value}))}
                     style={{ width: '100%', backgroundColor: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff', borderRadius: '14px', padding: '14px 18px', fontWeight: 700, fontSize: '14px', outline: 'none', boxSizing: 'border-box', colorScheme: 'dark' }}>
                     <option value="" style={{backgroundColor:'#0A192F'}}>{lang === 'FR' ? 'Sélectionner' : 'Select'}</option>
@@ -1337,8 +1137,164 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
     );
   }
 
+  // Firebase not resolved yet — show spinner, never flash dashboard or login
+  if (authLoading) {
+    return (
+      <div className="fixed inset-0 bg-[#0A192F] flex items-center justify-center">
+        <div className="w-12 h-12 border-4 border-white/10 border-t-orange rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  // Still waiting for profile check → spinner with escape
+  if (user && !profileChecked) {
+    return (
+      <div className="fixed inset-0 bg-[#0A192F] flex flex-col items-center justify-center gap-5">
+        <div className="w-12 h-12 border-4 border-white/10 border-t-orange rounded-full animate-spin" />
+        <p className="text-white/30 text-xs font-black uppercase tracking-widest">Loading profile...</p>
+        <button
+          onClick={async () => { try { await signOut(auth); } catch(e) {} setUser(null); if (onSignOutRef.current) { onSignOutRef.current(); } else if (onBackRef.current) { onBackRef.current(); } }}
+          className="px-5 py-2 bg-white/10 hover:bg-white/20 text-white/50 text-[10px] font-black uppercase tracking-widest rounded-xl border border-white/10 transition-all"
+        >← Sign out</button>
+      </div>
+    );
+  }
+
+  // ══ LOGIN SCREEN (user = null) ══
+  if (!user && !authLoading) {
+    return (
+      <div style={{ minHeight: '100vh', backgroundColor: '#0A192F', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px', position: 'relative', overflow: 'hidden' }}>
+        <div style={{ position: 'absolute', top: 0, left: 0, width: 500, height: 500, backgroundColor: '#f97316', borderRadius: '50%', filter: 'blur(160px)', transform: 'translate(-50%,-50%)', opacity: 0.07, pointerEvents: 'none' }} />
+        <div style={{ position: 'absolute', bottom: 0, right: 0, width: 500, height: 500, backgroundColor: '#3b82f6', borderRadius: '50%', filter: 'blur(160px)', transform: 'translate(50%,50%)', opacity: 0.07, pointerEvents: 'none' }} />
+        <div style={{ width: '100%', maxWidth: '460px', position: 'relative', zIndex: 10 }}>
+          <div style={{ textAlign: 'center', marginBottom: '32px' }}>
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '16px' }}><Logo inverted /></div>
+            <p style={{ color: 'white', fontWeight: 900, fontSize: '20px', letterSpacing: '-0.3px', textTransform: 'uppercase' }}>
+              CANDIDATE <span style={{ color: '#f97316' }}>SPACE</span>
+            </p>
+            <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: '13px', marginTop: '6px' }}>
+              {lang === 'FR' ? 'Choisissez votre méthode de connexion' : lang === 'AR' ? 'اختر طريقة تسجيل الدخول' : 'Choose your login method'}
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '24px', background: 'rgba(255,255,255,0.05)', borderRadius: '16px', padding: '4px' }}>
+            {(['phone', 'google'] as const).map(tab => (
+              <button key={tab} onClick={() => setLoginTab(tab)} style={{
+                flex: 1, padding: '10px', borderRadius: '12px', border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.1em', transition: 'all 0.2s',
+                background: loginTab === tab ? '#f97316' : 'transparent',
+                color: loginTab === tab ? 'white' : 'rgba(255,255,255,0.4)',
+              }}>
+                {tab === 'phone' ? '📱 ' : '🔑 '}
+                {tab === 'phone' ? (lang === 'FR' ? 'Téléphone' : lang === 'AR' ? 'هاتف' : 'Phone') : 'Gmail'}
+              </button>
+            ))}
+          </div>
+          {loginError && (
+            <div style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '12px', padding: '12px 16px', marginBottom: '16px', color: '#fca5a5', fontSize: '13px', fontWeight: 600 }}>
+              ⚠️ {loginError}
+            </div>
+          )}
+          {loginTab === 'phone' && (
+            <div style={{ background: 'rgba(255,255,255,0.04)', borderRadius: '20px', padding: '28px', border: '1px solid rgba(255,255,255,0.08)' }}>
+              <div style={{ background: 'rgba(249,115,22,0.1)', borderRadius: '12px', padding: '12px 16px', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ fontSize: '16px' }}>📱</span>
+                <div>
+                  <p style={{ color: '#f97316', fontWeight: 800, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.15em' }}>
+                    {lang === 'FR' ? 'CONNEXION PAR TÉLÉPHONE' : lang === 'AR' ? 'تسجيل الدخول برقم الهاتف' : 'LOGIN WITH PHONE NUMBER'}
+                  </p>
+                  <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: '11px', marginTop: '2px' }}>
+                    {lang === 'FR' ? 'Entrez votre numéro et mot de passe.' : lang === 'AR' ? 'أدخل رقم هاتفك وكلمة المرور.' : 'Enter your registered phone number and password.'}
+                  </p>
+                </div>
+              </div>
+              <form onSubmit={handlePhoneLogin}>
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ color: 'rgba(255,255,255,0.4)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.15em', display: 'block', marginBottom: '8px' }}>
+                    {lang === 'FR' ? 'NUMÉRO DE TÉLÉPHONE' : lang === 'AR' ? 'رقم الهاتف' : 'PHONE NUMBER'}
+                  </label>
+                  <div style={{ position: 'relative' }}>
+                    <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 18, pointerEvents: 'none' }}>📱</span>
+                    <input id="loginPhone" name="loginPhone" type="tel"
+                      value={loginPhone} onChange={e => setLoginPhone(e.target.value)}
+                      placeholder="77310000" autoComplete="off"
+                      style={{ width: '100%', background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '14px', padding: '14px 16px 14px 48px', color: 'white', fontSize: '15px', fontWeight: 600, outline: 'none', boxSizing: 'border-box' }}
+                    />
+                  </div>
+                  <p style={{ color: 'rgba(255,255,255,0.25)', fontSize: '11px', marginTop: '6px' }}>Example: 77310000 or +25377310000</p>
+                </div>
+                <div style={{ marginBottom: '20px' }}>
+                  <label style={{ color: 'rgba(255,255,255,0.4)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.15em', display: 'block', marginBottom: '8px' }}>
+                    {lang === 'FR' ? 'MOT DE PASSE' : lang === 'AR' ? 'كلمة المرور' : 'PASSWORD'}
+                  </label>
+                  <div style={{ position: 'relative' }}>
+                    <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 18, pointerEvents: 'none' }}>🔒</span>
+                    <input id="loginPassword" name="loginPassword" type="password"
+                      value={tempPassword} onChange={e => setTempPassword(e.target.value)}
+                      autoComplete="new-password"
+                      style={{ width: '100%', background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '14px', padding: '14px 16px 14px 48px', color: 'white', fontSize: '15px', fontWeight: 600, outline: 'none', boxSizing: 'border-box' }}
+                    />
+                  </div>
+                </div>
+                <button type="submit" disabled={loginLoading} style={{
+                  width: '100%', background: loginLoading ? 'rgba(249,115,22,0.5)' : '#f97316', color: 'white', border: 'none', borderRadius: '14px', padding: '16px', fontWeight: 900, fontSize: '13px', letterSpacing: '0.1em', textTransform: 'uppercase', cursor: loginLoading ? 'not-allowed' : 'pointer'
+                }}>
+                  {loginLoading ? '...' : (lang === 'FR' ? 'ACCÉDER À MON ESPACE →' : lang === 'AR' ? 'الوصول إلى مساحتي ←' : 'ACCESS MY SPACE →')}
+                </button>
+              </form>
+              <p style={{ textAlign: 'center', marginTop: '16px', color: 'rgba(255,255,255,0.25)', fontSize: '12px' }}>
+                {lang === 'FR' ? 'Numéro inconnu ?' : 'Unknown number?'}{' '}
+                <a href="mailto:contact@vediorgm.com" style={{ color: '#f97316', fontWeight: 700, textDecoration: 'none' }}>Contact Vedior GM</a>
+              </p>
+
+              {/* ── BANNIÈRE TEST MODE — retirer avant prod ── */}
+              {TEST_MODE && (
+                <div style={{ marginTop: 20, background: 'rgba(234,179,8,0.12)', border: '1px solid rgba(234,179,8,0.3)', borderRadius: 14, padding: '14px 16px' }}>
+                  <p style={{ color: '#eab308', fontWeight: 900, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.15em', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    🧪 Comptes de test (visible temporairement)
+                  </p>
+                  {TEST_CREDENTIALS.map((c, i) => (
+                    <div key={i}
+                      onClick={() => { setLoginPhone(c.phone); setTempPassword(c.password); }}
+                      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', marginBottom: 6, background: 'rgba(234,179,8,0.08)', borderRadius: 10, cursor: 'pointer', border: '1px solid rgba(234,179,8,0.15)' }}
+                    >
+                      <span style={{ color: 'rgba(255,255,255,0.6)', fontSize: 11, fontWeight: 700 }}>{c.label}</span>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <span style={{ background: 'rgba(255,255,255,0.08)', borderRadius: 6, padding: '2px 8px', color: '#eab308', fontSize: 11, fontFamily: 'monospace', fontWeight: 700 }}>📱 {c.phone}</span>
+                        <span style={{ background: 'rgba(255,255,255,0.08)', borderRadius: 6, padding: '2px 8px', color: '#eab308', fontSize: 11, fontFamily: 'monospace', fontWeight: 700 }}>🔑 {c.password}</span>
+                      </div>
+                    </div>
+                  ))}
+                  <p style={{ color: 'rgba(255,255,255,0.25)', fontSize: 10, marginTop: 8, fontStyle: 'italic' }}>
+                    Cliquer sur une ligne pour remplir automatiquement
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+          {loginTab === 'google' && (
+            <div style={{ background: 'rgba(255,255,255,0.04)', borderRadius: '20px', padding: '28px', border: '1px solid rgba(255,255,255,0.08)', textAlign: 'center' }}>
+              <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: '13px', marginBottom: '20px' }}>
+                {lang === 'FR' ? 'Connectez-vous avec votre compte Google.' : 'Sign in with your Google account.'}
+              </p>
+              <button onClick={login} disabled={loginLoading} style={{
+                width: '100%', background: 'white', color: '#1a1a1a', border: 'none', borderRadius: '14px', padding: '14px', fontWeight: 800, fontSize: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px'
+              }}>
+                <span style={{ fontSize: '20px' }}>🔑</span>
+                {lang === 'FR' ? 'Continuer avec Google' : 'Continue with Google'}
+              </button>
+            </div>
+          )}
+          <p style={{ textAlign: 'center', marginTop: '20px' }}>
+            <button onClick={onBack} style={{ color: 'rgba(255,255,255,0.3)', background: 'none', border: 'none', fontSize: '12px', cursor: 'pointer', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+              ← {lang === 'FR' ? 'RETOUR AU PORTAIL' : lang === 'AR' ? 'العودة إلى البوابة' : 'BACK TO PORTAL'}
+            </button>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div dir={dir} className="min-h-screen bg-gray-50 text-gray-900 font-sans selection:bg-orange/30">
+    <div dir={dir} className="fixed inset-0 bg-[#F0F2F8] text-gray-900 font-sans flex overflow-hidden relative">
       <AnimatePresence>
         {notification && (
           <motion.div
@@ -1357,99 +1313,107 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
         )}
       </AnimatePresence>
       {/* SIDEBAR */}
-      <aside className={`fixed top-0 bottom-0 ${dir === 'rtl' ? 'right-0' : 'left-0'} w-64 bg-[#0f1f3d] text-white z-50 flex flex-col`}>
+      <aside className={`${sidebarOpen ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0 fixed lg:sticky lg:top-0 z-50 w-[240px] min-w-[240px] bg-[#12152B] text-white flex flex-col overflow-hidden shrink-0 h-screen transition-transform duration-300`}>
         {/* Logo */}
-        <div className="px-6 py-7 cursor-pointer" onClick={onBack}>
-          <Logo inverted size="sm" />
+        <div className="px-5 pt-6 pb-5 border-b border-white/[0.06] cursor-pointer" onClick={onBack}>
+          <div className="flex items-center gap-3">
+            <div className="w-[34px] h-[34px] rounded-[9px] bg-orange-500 flex items-center justify-center shrink-0">
+              <User size={18} />
+            </div>
+            <Logo inverted size="sm" />
+          </div>
+          <span className="text-[10px] text-orange-400 font-semibold uppercase tracking-[0.12em] block mt-2">{lang === 'FR' ? 'Espace Candidat' : 'Candidate Space'}</span>
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 px-4 space-y-1 overflow-y-auto">
-          {[
-            { id: 'dashboard',    icon: LayoutDashboard, label: lang === 'FR' ? 'Tableau de bord'  : 'Dashboard' },
-            { id: 'applications', icon: FileText,         label: lang === 'FR' ? 'Mes Candidatures' : 'My Applications' },
-            { id: 'offers',       icon: Search,           label: lang === 'FR' ? "Offres d'emploi"  : 'Job Offers' },
-            { id: 'favorites',    icon: Star,             label: lang === 'FR' ? 'Favoris'           : 'Favorites' },
-            { id: 'messages',     icon: MessageSquare,    label: lang === 'FR' ? 'Messages'          : 'Messages' },
-            { id: 'profile',      icon: User,             label: lang === 'FR' ? 'Mon Profil'        : 'My Profile' },
-            { id: 'settings',     icon: Settings,         label: lang === 'FR' ? 'Paramètres'        : 'Settings' },
-          ].map((item: any) => (
-            <button
-              key={item.id}
-              onClick={() => setActiveTab(item.id)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-[11px] font-bold tracking-wide transition-all ${
-                activeTab === item.id
-                  ? 'bg-gray-700 text-white shadow-lg shadow-blue-600/30'
-                  : 'text-white/50 hover:text-white hover:bg-white/8'
-              }`}
-            >
-              <item.icon size={17} />
-              <span className="uppercase tracking-normal text-[10px] font-black">{item.label}</span>
-              {item.id === 'messages' && messages.length > 0 && (
-                <span className="ml-auto bg-gray-600 text-white text-[9px] font-black w-5 h-5 rounded-full flex items-center justify-center">
-                  {messages.length}
-                </span>
-              )}
-              {item.id === 'applications' && applications.length > 0 && activeTab !== 'applications' && (
-                <span className="ml-auto bg-white/15 text-white/70 text-[9px] font-black px-2 py-0.5 rounded-full">
-                  {applications.length}
-                </span>
-              )}
-            </button>
-          ))}
+        <nav className="flex-1 px-3 py-5 overflow-y-auto">
+          <p className="px-2 mb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-white/25">{lang === 'FR' ? 'Principal' : 'Main'}</p>
+          <CandNavItem icon={LayoutDashboard} label={lang === 'FR' ? 'Tableau de bord' : 'Dashboard'} active={activeTab === 'dashboard'} onClick={() => { setActiveTab('dashboard'); setSidebarOpen(false); }} />
+          <CandNavItem icon={FileText} label={lang === 'FR' ? 'Mes Candidatures' : 'My Applications'} active={activeTab === 'applications'} onClick={() => { setActiveTab('applications'); setSidebarOpen(false); }} badge={activeTab !== 'applications' && applications.length > 0 ? applications.length : undefined} />
+          <CandNavItem icon={Search} label={lang === 'FR' ? "Offres d'emploi" : 'Job Offers'} active={activeTab === 'offers'} onClick={() => { setActiveTab('offers'); setSidebarOpen(false); }} />
+          <CandNavItem icon={Star} label={lang === 'FR' ? 'Favoris' : 'Favorites'} active={activeTab === 'favorites'} onClick={() => { setActiveTab('favorites'); setSidebarOpen(false); }} />
+          <p className="px-2 mt-5 mb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-white/25">{lang === 'FR' ? 'Compte' : 'Account'}</p>
+          <CandNavItem icon={MessageSquare} label={lang === 'FR' ? 'Messages' : 'Messages'} active={activeTab === 'messages'} onClick={() => { setActiveTab('messages'); setSidebarOpen(false); }} badge={messages.length > 0 ? messages.length : undefined} />
+          <CandNavItem icon={User} label={lang === 'FR' ? 'Mon Profil' : 'My Profile'} active={activeTab === 'profile'} onClick={() => { setActiveTab('profile'); setSidebarOpen(false); }} />
+          <CandNavItem icon={Settings} label={lang === 'FR' ? 'Paramètres' : 'Settings'} active={activeTab === 'settings'} onClick={() => { setActiveTab('settings'); setSidebarOpen(false); }} />
         </nav>
 
         {/* User card + logout */}
-        <div className="p-4 border-t border-white/8 space-y-2">
-          <div className="flex items-center gap-3 px-3 py-3">
-            <div className="relative shrink-0">
-              <div className="w-10 h-10 rounded-full overflow-hidden bg-gray-200 border-2 border-gray-300">
-                {user.photoURL
-                  ? <img src={user.photoURL} alt="" className="w-full h-full object-cover" />
-                  : <div className="w-full h-full flex items-center justify-center text-gray-900 font-black">{user.email?.charAt(0).toUpperCase()}</div>
-                }
-              </div>
-              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-400 rounded-full border-2 border-[#0f1f3d]" />
+        <div className="mt-auto p-3 border-t border-white/[0.06]">
+          <div className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-[#1E2240] transition-colors">
+            <div className="w-[34px] h-[34px] rounded-full overflow-hidden bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center text-xs font-bold text-white shrink-0">
+              {(profile?.photoUrl || profile?.photoURL || user?.photoURL)
+                ? <img src={profile?.photoUrl || profile?.photoURL || user?.photoURL || ''} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                : <span>{(profileForm.fullName || user?.email)?.charAt(0).toUpperCase()}</span>
+              }
             </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-[11px] font-black text-white truncate">{user.displayName || user.email?.split('@')[0]}</p>
-              <p className="text-[9px] text-white/40 font-semibold">{lang === 'FR' ? "Gestionnaire d'entreprise" : 'Enterprise Manager'}</p>
+            <div className="overflow-hidden flex-1 min-w-0">
+              <p className="text-[12.5px] font-semibold truncate">{user?.displayName || user?.email?.split('@')[0]}</p>
+              <p className="text-[11px] text-white/60 truncate">{lang === 'FR' ? 'Candidat' : 'Candidate'}</p>
             </div>
           </div>
-          <button
-            onClick={logout}
-            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-normal text-white/40 hover:text-white hover:bg-white/8 transition-all"
-          >
-            <LogOut size={15} />
-            {lang === 'FR' ? 'Déconnexion' : 'Sign Out'}
+          <button onClick={async () => {
+            // Navigate away immediately — don't wait for Firebase
+            if (onSignOutRef.current) { onSignOutRef.current(); } else { onBackRef.current?.(); }
+            // Then sign out Firebase in background
+            try { await signOut(auth); } catch(e) { console.warn('signOut error:', e); }
+          }} className="mt-3 w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-red-500/10 text-red-300 font-semibold text-[10px] uppercase hover:bg-red-500/20 transition-all">
+            <LogOut size={12} /> {lang === 'FR' ? 'Déconnexion' : 'Sign Out'}
           </button>
         </div>
       </aside>
 
-      <main className={`transition-all duration-500 min-h-screen bg-[#f0f4fb] ${dir === 'rtl' ? 'mr-64' : 'ml-64'}`}>
+      {/* Mobile sidebar overlay */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 bg-black/60 z-30 lg:hidden" onClick={() => setSidebarOpen(false)} />
+      )}
+
+      {/* ── MOBILE BOTTOM NAV ── */}
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-[#12152B] border-t border-white/10 flex items-stretch z-40" style={{height:56, paddingBottom:'env(safe-area-inset-bottom,0px)'}}>
+        {[
+          { tab: 'dashboard', icon: '🏠', labelFR: 'Accueil', labelEN: 'Home' },
+          { tab: 'offers',    icon: '💼', labelFR: 'Offres',  labelEN: 'Offers' },
+          { tab: 'applications', icon: '📋', labelFR: 'Dossiers', labelEN: 'Apps' },
+          { tab: 'messages',  icon: '💬', labelFR: 'Messages', labelEN: 'Messages' },
+          { tab: 'profile',   icon: '👤', labelFR: 'Profil',  labelEN: 'Profile' },
+        ].map(item => (
+          <button key={item.tab} onClick={() => setActiveTab(item.tab as any)}
+            className={`flex-1 flex flex-col items-center justify-center gap-0.5 transition-all ${activeTab === item.tab ? 'text-orange-400' : 'text-white/40'}`}>
+            <span className="text-base leading-none">{item.icon}</span>
+            <span className="text-[9px] font-black uppercase tracking-wider">{lang === 'FR' ? item.labelFR : item.labelEN}</span>
+            {activeTab === item.tab && <div className="absolute top-0 w-8 h-0.5 bg-orange-400 rounded-full" />}
+          </button>
+        ))}
+      </nav>
+
+      <main className="flex-1 flex flex-col overflow-auto bg-[#f0f4fb] pb-[70px] lg:pb-0">
         {/* HEADER */}
-        <header className="bg-white border-b border-gray-100 px-8 py-5 flex items-center justify-between gap-6">
+        <header className="bg-white border-b border-gray-100 px-3 py-3 flex items-center gap-2 sm:gap-4">
+          <button onClick={() => setSidebarOpen(o => !o)} className="lg:hidden flex items-center justify-center w-9 h-9 rounded-xl border border-gray-200 text-gray-500 shrink-0">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          </button>
           {/* Left: tab label + greeting */}
           <div>
             <span className="text-blue-500 font-black uppercase tracking-[0.35em] text-[10px] block mb-1">
               {activeTab === 'offers' ? (lang === 'FR' ? 'OFFRES' : 'OFFERS') : activeTab.toUpperCase()}
             </span>
-            <h1 className="text-2xl font-black text-[#0f1f3d]">
+            <h1 className="text-base sm:text-2xl font-black text-[#0f1f3d] leading-tight">
               {lang === 'FR' ? 'Bonjour,' : 'Hello,'}{' '}
-              <span className="text-[#1a56db]">{user.displayName?.split(' ')[0] || user.email?.split('@')[0]}</span>{' '}
+              <span className="text-[#1a56db]">{user?.displayName?.split(' ')[0] || user?.email?.split('@')[0]}</span>{' '}
               <span>👋</span>
             </h1>
           </div>
 
           {/* Right: search + bell + lang */}
-          <div className="flex items-center gap-3 flex-shrink-0">
-            {/* Search bar */}
-            <div className="relative">
+          <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
+            {/* Search bar - hidden on mobile */}
+            <div className="relative hidden sm:block">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
               <input
                 type="text"
+                id="search" name="search"
                 placeholder={lang === 'FR' ? 'Rechercher une offre...' : 'Search a position...'}
-                className="pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-600 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 w-64 transition-all"
+                className="pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-600 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 w-48 sm:w-64 transition-all"
               />
               <button className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 bg-gray-700 rounded-lg flex items-center justify-center">
                 <Search size={13} className="text-white" />
@@ -1457,10 +1421,69 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
             </div>
 
             {/* Bell */}
-            <button className="relative w-10 h-10 bg-gray-50 border border-gray-200 rounded-xl flex items-center justify-center text-gray-500 hover:text-gray-700 transition-colors">
+            <button onClick={() => setShowNotifPanel(v => !v)} className="relative w-10 h-10 bg-gray-50 border border-gray-200 rounded-xl flex items-center justify-center text-gray-500 hover:text-gray-700 transition-colors">
               <Bell size={17} />
-              <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-red-500 rounded-full text-white text-[8px] font-black flex items-center justify-center border border-white">1</span>
+              {unreadNotifCount > 0 && (
+                <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-red-500 rounded-full text-white text-[8px] font-black flex items-center justify-center border border-white">{unreadNotifCount > 9 ? '9+' : unreadNotifCount}</span>
+              )}
             </button>
+
+            <AnimatePresence>
+              {showNotifPanel && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowNotifPanel(false)} />
+                  <motion.div
+                    initial={{ opacity: 0, y: -8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    className="absolute right-3 sm:right-6 top-14 w-[90vw] max-w-sm bg-white rounded-2xl border border-gray-100 shadow-xl z-50 overflow-hidden"
+                  >
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+                      <p className="text-sm font-black text-gray-900">{lang === 'FR' ? 'Notifications' : 'Notifications'}</p>
+                      {unreadNotifCount > 0 && (
+                        <button
+                          onClick={async () => {
+                            const unread = userNotifications.filter((n: any) => !n.read);
+                            await Promise.all(unread.map((n: any) => updateDoc(doc(db, 'notifications', n.id), { read: true })));
+                          }}
+                          className="text-[10px] font-bold text-blue-600 uppercase hover:underline"
+                        >
+                          {lang === 'FR' ? 'Tout marquer lu' : 'Mark all read'}
+                        </button>
+                      )}
+                    </div>
+                    <div className="max-h-96 overflow-y-auto">
+                      {userNotifications.length === 0 ? (
+                        <div className="py-10 text-center text-gray-300">
+                          <Bell size={28} strokeWidth={1.5} className="mx-auto mb-2" />
+                          <p className="text-xs font-bold">{lang === 'FR' ? 'Aucune notification' : 'No notifications'}</p>
+                        </div>
+                      ) : (
+                        userNotifications.slice(0, 20).map((n: any) => (
+                          <button
+                            key={n.id}
+                            onClick={async () => {
+                              if (!n.read) await updateDoc(doc(db, 'notifications', n.id), { read: true });
+                              if (n.type === 'application_status' || n.type === 'pipeline_update') { setActiveTab('applications'); setShowNotifPanel(false); }
+                            }}
+                            className={`w-full text-left px-4 py-3 border-b border-gray-50 hover:bg-gray-50 transition-colors flex gap-3 ${!n.read ? 'bg-blue-50/40' : ''}`}
+                          >
+                            <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${!n.read ? 'bg-blue-500' : 'bg-transparent'}`} />
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold text-gray-900 truncate">{n.title}</p>
+                              <p className="text-[11px] text-gray-500 truncate">{n.message}</p>
+                              <p className="text-[9px] text-gray-300 font-bold mt-0.5">
+                                {n.createdAt?.toDate?.()?.toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) || ''}
+                              </p>
+                            </div>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
 
             {/* Language */}
             <button
@@ -1472,7 +1495,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
           </div>
         </header>
 
-        <div className="p-8">
+        <div className="p-3 sm:p-5 lg:p-8">
         <AnimatePresence mode="wait">
           {loading ? (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-center justify-center h-64">
@@ -1486,177 +1509,247 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
               exit={{ opacity: 0, y: -20 }}
             >
                 {activeTab === 'dashboard' && (
-                <div className="space-y-12">
-                  {/* BENTO HERO SECTION */}
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                    <div className="lg:col-span-2 bg-gray-900 rounded-[3rem] p-12 text-white relative overflow-hidden group shadow-sm">
-                      <div className="absolute top-0 right-0 w-96 h-96 bg-gray-100 rounded-full blur-[100px] -mr-48 -mt-48 group-hover:scale-110 transition-transform duration-700" />
-                      <div className="relative z-10 flex flex-col h-full">
-                        <div className="flex items-center gap-4 mb-10">
-                          <div className="w-16 h-16 bg-white/10 backdrop-blur-xl rounded-2xl flex items-center justify-center border border-white/10">
-                            <Star className="text-gray-900" size={32} />
+                <div className="space-y-4">
+
+                  {/* ── HERO ROW ── */}
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+
+                    {/* Profil card */}
+                    <div className="lg:col-span-2 bg-gray-900 rounded-2xl p-4 sm:p-8 text-white relative overflow-hidden group">
+                      <div className="absolute -top-20 -right-20 w-72 h-72 bg-orange-500/10 rounded-full blur-3xl group-hover:scale-110 transition-transform duration-700" />
+                      <div className="relative z-10 flex flex-col h-full gap-6">
+                        <div className="flex items-center gap-4">
+                          <div className="w-12 h-12 bg-orange-500/20 rounded-2xl flex items-center justify-center">
+                            <Star className="text-orange-400" size={22} />
                           </div>
                           <div>
-                            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-gray-900 mb-1 italic">Status Premium</p>
-                            <h2 className="text-2xl font-black font-semibold">Profil Optimisé</h2>
+                            <p className="text-[9px] font-black uppercase tracking-widest text-orange-400 mb-0.5">{lang === 'FR' ? 'STATUT PROFIL' : lang === 'AR' ? 'حالة الملف' : 'PROFILE STATUS'}</p>
+                            <h2 className="text-xl font-black">{lang === 'FR' ? 'Profil Optimisé' : lang === 'AR' ? 'الملف الشخصي' : 'Optimised Profile'}</h2>
                           </div>
                         </div>
-                        <p className="text-white/60 text-lg font-bold italic border-l-4 border-gray-300 pl-8 mb-12 max-w-lg">
-                          {lang === 'FR' 
-                            ? 'Votre visibilité auprès des recruteurs est actuellement augmentée de 45% grâce à la complétion de votre CV Vedior.' 
-                            : 'Your visibility to recruiters is currently increased by 45% thanks to the completion of your Vedior CV.'}
-                        </p>
-                        <div className="mt-auto flex flex-wrap gap-4">
-                          <button 
-                            onClick={() => setActiveTab('profile')}
-                            className="bg-white text-gray-900 px-8 py-4 rounded-2xl font-black text-[10px] uppercase tracking-normal hover:bg-gray-900 hover:text-white transition-all shadow-sm shadow-gray-200/20 active:scale-95 italic flex items-center gap-3"
-                          >
-                             {lang === 'FR' ? 'Peaufiner mon CV' : 'Refine my CV'} <ArrowRight size={16} />
+
+                        {/* Progress bar */}
+                        {(() => {
+                          const pct = Math.round(([!!profileForm.fullName,!!profileForm.phone,!!profileForm.nationality,!!profileForm.birthDate,!!profileForm.address,!!profileForm.education,!!profileForm.experience,!!profileForm.languages,!!cvUrl,!!idUrl].filter(Boolean).length/10)*100);
+                          return (
+                            <div>
+                              <div className="flex justify-between items-center mb-2">
+                                <p className="text-white/60 text-sm font-semibold">
+                                  {lang === 'FR' ? `Complété à ${pct}%` : lang === 'AR' ? `مكتمل بنسبة ${pct}%` : `${pct}% complete`}
+                                </p>
+                                <span className="text-orange-400 text-sm font-black">{pct}%</span>
+                              </div>
+                              <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
+                                <div className="h-full bg-gradient-to-r from-orange-500 to-orange-400 rounded-full transition-all duration-700" style={{ width: `${pct}%` }} />
+                              </div>
+                              {pct < 100 && (
+                                <p className="text-white/40 text-[11px] font-medium mt-2 italic">
+                                  {lang === 'FR' ? 'Complétez votre profil pour augmenter votre visibilité auprès des recruteurs.' : lang === 'AR' ? 'أكمل ملفك لتحسين ظهورك للمجندين.' : 'Complete your profile to boost your visibility with recruiters.'}
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })()}
+
+                        <div className="flex flex-wrap gap-3 mt-auto">
+                          <button onClick={() => setActiveTab('profile')}
+                            className="bg-white text-gray-900 px-6 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-orange-400 hover:text-white transition-all flex items-center gap-2 active:scale-95">
+                            {lang === 'FR' ? 'Peaufiner mon CV' : lang === 'AR' ? 'تحسين سيرتي' : 'Refine my CV'} <ArrowRight size={14} />
                           </button>
-                          <button 
-                            onClick={() => setActiveTab('offers')}
-                            className="bg-white/5 border border-white/10 text-white px-8 py-4 rounded-2xl font-black text-[10px] uppercase tracking-normal hover:bg-white/10 transition-all italic"
-                          >
-                             {lang === 'FR' ? 'Explorer les offres' : 'Explore offers'}
+                          <button onClick={() => setActiveTab('offers')}
+                            className="bg-white/10 border border-white/10 text-white px-6 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-white/20 transition-all active:scale-95">
+                            {lang === 'FR' ? 'Explorer les offres' : lang === 'AR' ? 'استعرض الوظائف' : 'Explore offers'}
                           </button>
                         </div>
                       </div>
                     </div>
 
-                    <div className="bg-gray-900 rounded-[3rem] p-10 text-white flex flex-col justify-between shadow-sm shadow-gray-200/30 group relative overflow-hidden">
-                       <div className="absolute inset-0 bg-white/5 translate-y-full group-hover:translate-y-0 transition-transform duration-500" />
-                       <div className="relative z-10">
-                         <div className="w-14 h-14 bg-white/20 rounded-2xl flex items-center justify-center mb-8">
-                           <Bell size={28} />
-                         </div>
-                         <h3 className="text-4xl font-black font-semibold leading-none mb-4">5+</h3>
-                         <p className="text-[11px] font-black uppercase tracking-normal opacity-80">{lang === 'FR' ? 'Nouveaux messages de recruteurs' : 'New recruiter messages'}</p>
-                       </div>
-                       <button 
-                         onClick={() => setActiveTab('messages')}
-                         className="relative z-10 mt-8 w-full py-4 bg-white text-gray-900 rounded-2xl text-[10px] font-black uppercase tracking-normal hover:scale-105 transition-all shadow-lg active:scale-95 italic"
-                       >
-                         {lang === 'FR' ? 'Consulter ma boîte' : 'Check Inbox'}
-                       </button>
+                    {/* Messages + quick stats */}
+                    <div className="flex flex-col gap-4">
+                      <div className="bg-gray-900 rounded-2xl p-5 text-white flex flex-col justify-between flex-1 relative overflow-hidden group">
+                        <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-orange-500/10 rounded-full blur-2xl" />
+                        <div className="relative z-10">
+                          <div className="w-11 h-11 bg-white/10 rounded-xl flex items-center justify-center mb-5">
+                            <Bell size={20} />
+                          </div>
+                          <h3 className="text-3xl font-black leading-none mb-2">{messages.filter((m: any) => !m.readByCandidate).length}</h3>
+                          <p className="text-[10px] font-black uppercase tracking-widest text-white/50">{lang === 'FR' ? 'Nouveaux messages' : lang === 'AR' ? 'رسائل جديدة' : 'New messages'}</p>
+                        </div>
+                        <button onClick={() => setActiveTab('messages')}
+                          className="relative z-10 mt-6 w-full py-3 bg-white text-gray-900 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-orange-400 hover:text-white transition-all active:scale-95">
+                          {lang === 'FR' ? 'Ma boîte mail' : lang === 'AR' ? 'صندوق الرسائل' : 'Check Inbox'}
+                        </button>
+                      </div>
+
+                      <div className="bg-orange-500 rounded-2xl p-4 sm:p-7 text-white relative overflow-hidden">
+                        <div className="absolute -top-4 -right-4 w-24 h-24 bg-white/10 rounded-full" />
+                        <p className="text-[9px] font-black uppercase tracking-widest mb-1 text-white/70">{lang === 'FR' ? 'OFFRES DISPONIBLES' : lang === 'AR' ? 'وظائف متاحة' : 'AVAILABLE JOBS'}</p>
+                        <h3 className="text-4xl font-black">{jobs.filter(j => j.status === 'active' || j.status === 'published').length}</h3>
+                        <button onClick={() => setActiveTab('offers')}
+                          className="mt-4 text-[10px] font-black uppercase tracking-widest text-white/80 hover:text-white flex items-center gap-1 transition-all">
+                          {lang === 'FR' ? 'Voir tout' : lang === 'AR' ? 'عرض الكل' : 'View all'} <ArrowRight size={12} />
+                        </button>
+                      </div>
                     </div>
                   </div>
 
-                  {/* STATS GRID */}
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-8">
+                  {/* ── STATS ROW ── */}
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
                     {[
-                      { label: lang === 'FR' ? 'Postulations' : 'Applications', val: stats.total, icon: Briefcase, color: 'navy', trend: '+2' },
-                      { label: lang === 'FR' ? 'En Attente' : 'Pending', val: stats.new, icon: Clock, color: 'gray', trend: 'Soon' },
-                      { label: lang === 'FR' ? 'Entretiens' : 'Interviews', val: stats.interview, icon: Calendar, color: 'navy', trend: 'HOT' },
-                      { label: lang === 'FR' ? 'Réussites' : 'Accepted', val: stats.accepted, icon: CheckCircle2, color: 'gray', trend: '100%' }
+                      { label: lang === 'FR' ? 'Candidatures' : lang === 'AR' ? 'طلباتي' : 'Applications', val: stats.total, icon: Briefcase, bg: 'bg-white', num: 'text-gray-900' },
+                      { label: lang === 'FR' ? 'En attente' : lang === 'AR' ? 'قيد المعالجة' : 'Pending', val: stats.new, icon: Clock, bg: 'bg-white', num: 'text-gray-900' },
+                      { label: lang === 'FR' ? 'Entretiens' : lang === 'AR' ? 'مقابلات' : 'Interviews', val: stats.interview, icon: Calendar, bg: 'bg-white', num: 'text-gray-900' },
+                      { label: lang === 'FR' ? 'Acceptés' : lang === 'AR' ? 'مقبول' : 'Accepted', val: stats.accepted, icon: CheckCircle2, bg: 'bg-gray-900', num: 'text-white' }
                     ].map((s, i) => (
-                      <div key={i} className="bg-white p-10 rounded-[2.5rem] border border-gray-100 shadow-sm hover:shadow-sm transition-all group overflow-hidden relative">
-                        <div className={`absolute top-0 right-0 p-6 opacity-0 group-hover:opacity-100 transition-opacity font-black text-[10px] italic ${s.color === 'orange' ? 'text-gray-900' : 'text-gray-900'}`}>
-                          {s.trend}
+                      <div key={i} className={`${s.bg} p-3 sm:p-5 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all group cursor-pointer`}
+                        onClick={() => setActiveTab('applications')}>
+                        <div className={`w-10 h-10 ${i === 3 ? 'bg-orange-500' : 'bg-gray-100'} rounded-xl flex items-center justify-center mb-3 sm:mb-4 group-hover:-rotate-6 transition-transform`}>
+                          <s.icon size={20} className={i === 3 ? 'text-white' : 'text-gray-700'} />
                         </div>
-                        <div className={`w-14 h-14 ${s.color === 'orange' ? 'bg-gray-900 text-white shadow-gray-200/30' : 'bg-gray-900 text-white shadow-gray-200/30'} rounded-2xl flex items-center justify-center mb-8 shadow-sm transition-all group-hover:-rotate-6`}>
-                          <s.icon size={26} />
-                        </div>
-                        <div className="text-5xl font-black text-gray-900 mb-3 tabular-nums tracking-tighter italic">{s.val}</div>
-                        <p className="text-[11px] font-black text-gray-400 uppercase tracking-[0.3em] italic">{s.label}</p>
+                        <div className={`text-2xl font-black ${s.num} mb-1 tabular-nums`}>{s.val}</div>
+                        <p className={`text-[10px] font-black uppercase tracking-widest ${i === 3 ? 'text-white/50' : 'text-gray-400'}`}>{s.label}</p>
                       </div>
                     ))}
                   </div>
 
-                  <div className="grid lg:grid-cols-[1.8fr_1.2fr] gap-10">
-                    {/* CHART */}
-                    <div className="bg-white p-12 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden group">
-                      <div className="flex items-center justify-between mb-12">
-                        <div>
-                          <h3 className="text-2xl font-black text-gray-900 font-semibold mb-2">
-                             Performance <span className="text-gray-900">Recrutement</span>
-                          </h3>
-                          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-normal">{lang === 'FR' ? 'Tendances de consultation de votre profil' : 'Profile view trends'}</p>
-                        </div>
-                        <div className="p-4 bg-gray-100 text-gray-900 rounded-2xl group-hover:bg-gray-900 group-hover:text-white transition-all"><TrendingUp size={24} /></div>
-                      </div>
-                      <div className="h-[350px] w-full" style={{ minHeight: 350, minWidth: 0 }}>
-                        <ResponsiveContainer width="100%" height={350}>
-                          <AreaChart data={getChartData(lang)}>
-                            <defs>
-                              <linearGradient id="colorVal" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#f97316" stopOpacity={0.4}/>
-                                <stop offset="95%" stopColor="#f97316" stopOpacity={0}/>
-                              </linearGradient>
-                            </defs>
-                            <CartesianGrid strokeDasharray="5 5" vertical={false} stroke="#f1f5f9" />
-                            <XAxis 
-                              dataKey="name" 
-                              axisLine={false} 
-                              tickLine={false} 
-                              tick={{ fontSize: 10, fontWeight: 900, fill: '#0a192f', opacity: 0.3 }} 
-                            />
-                            <YAxis hide />
-                            <Tooltip 
-                              cursor={{ stroke: '#f97316', strokeWidth: 2, strokeDasharray: '5 5' }}
-                              contentStyle={{ 
-                                borderRadius: '24px', 
-                                border: 'none', 
-                                boxShadow: '0 25px 50px rgba(0,0,0,0.15)',
-                                fontWeight: 900,
-                                fontSize: '11px',
-                                textTransform: 'uppercase',
-                                padding: '15px'
-                              }} 
-                            />
-                            <Area type="monotone" dataKey="value" stroke="#f97316" strokeWidth={5} fillOpacity={1} fill="url(#colorVal)" />
-                          </AreaChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </div>
+                  {/* ── OFFRES + ACTIVITÉ ── */}
+                  <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-3">
 
-                    {/* RECENT ACTIVITY BENTO CARD */}
-                    <div className="bg-white p-12 rounded-xl border border-gray-100 shadow-sm flex flex-col relative overflow-hidden">
-                      <div className="absolute top-0 right-0 w-32 h-32 bg-gray-100 rounded-full -mr-16 -mt-16" />
-                      <div className="flex items-center justify-between mb-10 relative z-10">
-                        <h3 className="text-xl font-black text-gray-900 font-semibold">{lang === 'FR' ? 'Dossier Récent' : 'Recent Files'}</h3>
-                        <Activity size={20} className="text-gray-900" />
+                    {/* Offres récentes */}
+                    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+                      <div className="flex items-center justify-between p-4 sm:p-6 border-b border-gray-50">
+                        <div>
+                          <h3 className="text-lg font-black text-gray-900">{lang === 'FR' ? 'Offres récentes' : lang === 'AR' ? 'أحدث الوظائف' : 'Recent Job Offers'}</h3>
+                          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-0.5">{lang === 'FR' ? 'Correspondant à votre profil' : lang === 'AR' ? 'تتوافق مع ملفك' : 'Matching your profile'}</p>
+                        </div>
+                        <button onClick={() => setActiveTab('offers')}
+                          className="text-[10px] font-black uppercase tracking-widest text-orange-500 hover:text-orange-600 flex items-center gap-1 transition-all">
+                          {lang === 'FR' ? 'Voir tout' : lang === 'AR' ? 'الكل' : 'All'} <ArrowRight size={12} />
+                        </button>
                       </div>
-                      <div className="space-y-4 flex-1 relative z-10">
-                        {applications.slice(0, 5).length > 0 ? (
-                          applications.slice(0, 5).map((app, i) => (
-                            <div key={app.id} className="group bg-gray-50/50 hover:bg-white p-5 rounded-2xl border border-transparent hover:border-navy/5 hover:shadow-lg transition-all flex gap-5 items-center">
-                               <div className="w-12 h-12 bg-gray-900 rounded-xl flex items-center justify-center text-white shrink-0 group-hover:bg-gray-900 transition-colors shadow-lg">
-                                 {app.sector ? getSectorIcon(app.sector) : <Briefcase size={20} />}
-                               </div>
-                               <div className="min-w-0">
-                                 <p className="text-[12px] font-black uppercase text-gray-900 truncate leading-none group-hover:text-gray-900 transition-colors">
-                                   {app.jobTitle || 'Candidature Spontanée'}
-                                 </p>
-                                 <div className="flex items-center gap-2 mt-2">
-                                   <StatusBadge status={app.status || 'new'} lang={lang} />
-                                   <span className="text-[9px] font-bold text-gray-400 uppercase tracking-normal">• {new Date(app.createdAt?.seconds * 1000).toLocaleDateString()}</span>
-                                 </div>
-                               </div>
+                      <div className="divide-y divide-gray-50">
+                        {jobs.filter(j => j.status === 'active' || j.status === 'published').slice(0, 5).length > 0 ? (
+                          jobs.filter(j => j.status === 'active' || j.status === 'published').slice(0, 5).map((job, i) => (
+                            <div key={job.id} className="flex items-center gap-3 p-3 sm:p-4 hover:bg-gray-50/80 transition-all cursor-pointer group"
+                              onClick={() => setActiveTab('offers')}>
+                              <div className="w-11 h-11 bg-gray-900 rounded-xl flex items-center justify-center text-white shrink-0 group-hover:bg-orange-500 transition-colors">
+                                {job.sector ? getSectorIcon(job.sector) : <Briefcase size={18} />}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[12px] font-black text-gray-900 truncate">{job.title || job.jobTitle || '—'}</p>
+                                <div className="flex items-center gap-2 mt-1">
+                                  <span className="text-[10px] font-bold text-gray-400">{job.company || job.companyName || '—'}</span>
+                                  {job.location && <span className="text-[10px] text-gray-300">· {job.location}</span>}
+                                </div>
+                              </div>
+                              <div className="shrink-0 flex flex-col items-end gap-1">
+                                {job.contractType && (
+                                  <span className="text-[9px] font-black uppercase tracking-widest bg-gray-100 text-gray-600 px-2 py-1 rounded-lg">{job.contractType}</span>
+                                )}
+                                {job.salary && (
+                                  <span className="text-[9px] font-bold text-orange-500">{job.salary}</span>
+                                )}
+                              </div>
                             </div>
                           ))
                         ) : (
-                          <div className="flex-1 flex flex-col items-center justify-center text-center p-10 opacity-20">
-                            <FileText size={64} strokeWidth={1} className="mb-6" />
-                            <p className="text-[12px] font-black uppercase tracking-[0.3em]">{lang === 'FR' ? 'Aucune activité' : 'No activity'}</p>
+                          <div className="flex flex-col items-center justify-center p-8 sm:p-14 text-center opacity-30">
+                            <Briefcase size={40} strokeWidth={1} className="mb-3 text-gray-400" />
+                            <p className="text-[11px] font-black uppercase tracking-widest text-gray-400">{lang === 'FR' ? 'Aucune offre disponible' : lang === 'AR' ? 'لا توجد وظائف' : 'No jobs available'}</p>
                           </div>
                         )}
                       </div>
-                      <button 
-                        onClick={() => setActiveTab('applications')}
-                        className="relative z-10 mt-10 w-full py-5 bg-gray-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-gray-900 transition-all shadow-sm shadow-gray-200/10 active:scale-95 italic flex items-center justify-center gap-3"
-                      >
-                         {lang === 'FR' ? 'Voir l\'historique' : 'View History'} <ArrowRight size={16} />
-                      </button>
+                      {jobs.filter(j => j.status === 'active' || j.status === 'published').length > 5 && (
+                        <div className="p-5 border-t border-gray-50">
+                          <button onClick={() => setActiveTab('offers')}
+                            className="w-full py-3 bg-gray-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-orange-500 transition-all active:scale-95">
+                            {lang === 'FR' ? `Voir toutes les offres (${jobs.filter(j => j.status === 'active' || j.status === 'published').length})` : lang === 'AR' ? `عرض كل الوظائف (${jobs.filter(j => j.status === 'active' || j.status === 'published').length})` : `View all jobs (${jobs.filter(j => j.status === 'active' || j.status === 'published').length})`}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Activité récente */}
+                    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden flex flex-col">
+                      <div className="flex items-center justify-between p-4 sm:p-6 border-b border-gray-50">
+                        <div>
+                          <h3 className="text-lg font-black text-gray-900">{lang === 'FR' ? 'Mes candidatures' : lang === 'AR' ? 'طلباتي الأخيرة' : 'My Applications'}</h3>
+                          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-0.5">{lang === 'FR' ? 'Activité récente' : lang === 'AR' ? 'النشاط الأخير' : 'Recent activity'}</p>
+                        </div>
+                        <Activity size={18} className="text-gray-400" />
+                      </div>
+                      <div className="flex-1 divide-y divide-gray-50">
+                        {applications.slice(0, 5).length > 0 ? (
+                          applications.slice(0, 5).map((app) => (
+                            <div key={app.id} className="flex items-center gap-3 p-3 sm:p-4 hover:bg-gray-50/80 transition-all cursor-pointer group"
+                              onClick={() => setActiveTab('applications')}>
+                              <div className="w-10 h-10 bg-gray-100 rounded-xl flex items-center justify-center group-hover:bg-gray-900 group-hover:text-white transition-all shrink-0">
+                                {app.sector ? getSectorIcon(app.sector) : <Briefcase size={16} />}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[11px] font-black text-gray-900 truncate">{app.jobTitle || (lang === 'FR' ? 'Candidature spontanée' : 'Spontaneous application')}</p>
+                                <div className="mt-1">
+                                  <StatusBadge status={app.status || 'new'} lang={lang} />
+                                </div>
+                              </div>
+                              <span className="text-[9px] text-gray-300 font-bold shrink-0">{app.createdAt ? new Date(app.createdAt.seconds * 1000).toLocaleDateString() : '—'}</span>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="flex flex-col items-center justify-center p-8 text-center opacity-30">
+                            <Search size={32} strokeWidth={1} className="mb-2 text-gray-400" />
+                            <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">{lang === 'FR' ? 'Aucun dossier trouvé' : lang === 'AR' ? 'لا يوجد طلبات' : 'No applications yet'}</p>
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-5 border-t border-gray-50 mt-auto">
+                        <button onClick={() => setActiveTab('applications')}
+                          className="w-full py-3 bg-gray-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-orange-500 transition-all active:scale-95 flex items-center justify-center gap-2">
+                          {lang === 'FR' ? "Voir l'historique" : lang === 'AR' ? 'عرض السجل' : 'View History'} <ArrowRight size={14} />
+                        </button>
+                      </div>
                     </div>
                   </div>
+
+                  {/* ── CHART ── */}
+                  <div className="hidden sm:block bg-white p-4 sm:p-8 rounded-2xl border border-gray-100 shadow-sm">
+                    <div className="flex items-center justify-between mb-4 sm:mb-8">
+                      <div>
+                        <h3 className="text-lg font-black text-gray-900">{lang === 'FR' ? 'Performance Recrutement' : lang === 'AR' ? 'أداء التوظيف' : 'Recruitment Performance'}</h3>
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-0.5">{lang === 'FR' ? 'Tendances de consultation de votre profil' : lang === 'AR' ? 'إحصائيات الملف' : 'Profile view trends'}</p>
+                      </div>
+                      <div className="p-3 bg-gray-100 rounded-xl hover:bg-gray-900 hover:text-white transition-all group cursor-pointer">
+                        <TrendingUp size={20} className="text-gray-500 group-hover:text-white transition-colors" />
+                      </div>
+                    </div>
+                    <div className="h-[220px] w-full">
+                      <ResponsiveContainer width="100%" height={220}>
+                        <AreaChart data={getRealChartData(applications)}>
+                          <defs>
+                            <linearGradient id="colorVal" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#f97316" stopOpacity={0.3}/>
+                              <stop offset="95%" stopColor="#f97316" stopOpacity={0}/>
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="#f1f5f9" />
+                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 900, fill: '#94a3b8' }} />
+                          <YAxis hide />
+                          <Tooltip cursor={{ stroke: '#f97316', strokeWidth: 1.5, strokeDasharray: '5 5' }}
+                            contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 20px 40px rgba(0,0,0,0.12)', fontWeight: 900, fontSize: '11px', padding: '12px' }} />
+                          <Area type="monotone" dataKey="value" stroke="#f97316" strokeWidth={3} fillOpacity={1} fill="url(#colorVal)" />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
                 </div>
               )}
 
               {activeTab === 'applications' && (
-                <div className="space-y-12">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 px-4">
+                <div className="space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-0 sm:px-6">
                     <div>
-                      <h2 className="text-3xl font-black text-gray-900 font-semibold mb-2 underline decoration-orange decoration-4 underline-offset-8 decoration-skip-ink-none">{lang === 'FR' ? 'Suivi Dossiers' : 'Application Tracking'}</h2>
+                      <h2 className="text-xl sm:text-3xl font-black text-gray-900 mb-1">{lang === 'FR' ? 'Suivi Dossiers' : 'Application Tracking'}</h2>
                       <p className="text-[10px] font-bold text-gray-400 uppercase tracking-normal leading-relaxed">
                         {lang === 'FR' ? 'Gestion en temps réel de votre parcours professionnel' : 'Real-time management of your professional journey'}
                       </p>
@@ -1669,46 +1762,39 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                     </div>
                   </div>
                   
-                  <div className="grid gap-8">
+                  <div className="grid gap-3">
                     {applications.length > 0 ? (
                       applications.map((app) => (
-                        <div key={app.id} className="group bg-white p-8 rounded-xl border border-gray-100 shadow-sm hover:shadow-sm transition-all flex flex-col md:flex-row items-center gap-10 relative overflow-hidden">
-                          <div className="absolute top-0 right-0 w-2 h-full bg-gray-900 opacity-0 group-hover:opacity-100 transition-opacity" />
-                          <div className="w-24 h-24 bg-gray-900 rounded-[3rem] flex items-center justify-center text-white shadow-sm shadow-gray-200/20 group-hover:bg-gray-900 transition-all duration-700 shrink-0 -rotate-3 group-hover:rotate-0 relative overflow-hidden">
-                            <div className="absolute inset-0 bg-white/5 skew-y-12 translate-y-1/2 group-hover:translate-y-0 transition-transform" />
-                            <div className="relative z-10">
-                              {app.sector ? getSectorIcon(app.sector) : <Briefcase size={36} />}
-                            </div>
+                        <div key={app.id} className="group bg-white p-4 rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-all flex items-center gap-4 relative overflow-hidden">
+                          <div className="absolute top-0 right-0 w-1 h-full bg-gray-900 opacity-0 group-hover:opacity-100 transition-opacity" />
+                          <div className="w-11 h-11 bg-gray-900 rounded-xl flex items-center justify-center text-white shrink-0">
+                            {app.sector ? getSectorIcon(app.sector) : <Briefcase size={18} />}
                           </div>
                           
-                          <div className="flex-1 text-center md:text-left">
-                            <div className="flex flex-wrap justify-center md:justify-start items-center gap-3 mb-4">
-                              <p className="text-2xl font-black text-gray-900 uppercase tracking-tight italic group-hover:text-gray-900 transition-all group-hover:translate-x-2 duration-500">{app.jobTitle || 'Candidature Spontanée'}</p>
-                              <span className="px-5 py-1.5 bg-gray-100 rounded-full text-[9px] font-black uppercase text-gray-400 italic">Ref: {app.id.slice(0, 8)}</span>
-                            </div>
-                            <div className="flex flex-wrap justify-center md:justify-start items-center gap-6 text-[10px] font-black text-gray-400 uppercase tracking-normal italic">
-                               <span className="flex items-center gap-2 bg-gray-100 px-4 py-2 rounded-2xl text-gray-900"><Calendar size={14} className="text-gray-900" /> {app.createdAt ? new Date(app.createdAt.seconds * 1000).toLocaleDateString() : '--/--'}</span>
-                               <span className="flex items-center gap-2 bg-gray-100 px-4 py-2 rounded-2xl text-gray-900"><Briefcase size={14} className="text-gray-900" /> {app.sector || 'Général'}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-black text-gray-900 truncate">{app.jobTitle || 'Candidature Spontanée'}</p>
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              <span className="text-[9px] font-bold text-gray-400 bg-gray-100 px-2 py-0.5 rounded-lg">Ref: {app.id.slice(0, 8).toUpperCase()}</span>
+                              <span className="flex items-center gap-1 text-[9px] font-bold text-gray-400"><Calendar size={10} /> {app.createdAt ? new Date(app.createdAt.seconds * 1000).toLocaleDateString() : '--'}</span>
+                              <span className="text-[9px] font-bold text-gray-400">{app.sector || 'Général'}</span>
                             </div>
                           </div>
 
-                          <div className="flex flex-col items-center md:items-end gap-6 shrink-0 md:min-w-[200px]">
+                          <div className="flex flex-col items-end gap-2 shrink-0">
                             <StatusBadge status={app.status || 'new'} lang={lang} />
-                            <div className="flex items-center gap-3 w-full">
-                              <button 
-                                onClick={() => setSelectedApp(app)}
-                                className="flex-1 px-8 py-4 bg-gray-900 text-white text-[10px] font-black uppercase tracking-normal rounded-2xl hover:bg-gray-900 transition-all shadow-sm shadow-gray-200/10 italic flex items-center justify-center gap-3 active:scale-95 group/btn">
-                                {lang === 'FR' ? 'Consulter' : 'View Details'} 
-                                <ArrowRight size={16} className="group-hover/btn:translate-x-1 transition-transform" />
-                              </button>
-                            </div>
+                            <button 
+                              onClick={() => setSelectedApp(app)}
+                              className="px-3 py-1.5 bg-gray-900 text-white text-[9px] font-black uppercase tracking-normal rounded-lg flex items-center gap-1.5 active:scale-95 transition-all">
+                              {lang === 'FR' ? 'Consulter' : 'View'} 
+                              <ArrowRight size={12} />
+                            </button>
                           </div>
                         </div>
                       ))
                     ) : (
-                      <div className="py-40 text-center bg-white rounded-[4rem] border-2 border-dashed border-navy/5 opacity-40">
-                         <Search size={80} strokeWidth={1.5} className="mx-auto mb-8 text-gray-400" />
-                         <p className="font-black uppercase text-base tracking-[0.4em] text-gray-900 italic">{lang === 'FR' ? 'Aucun Dossier Trouvé' : 'No Applications Found'}</p>
+                      <div className="py-16 text-center bg-white rounded-2xl border-2 border-dashed border-gray-100 opacity-40">
+                         <Search size={40} strokeWidth={1.5} className="mx-auto mb-3 text-gray-400" />
+                         <p className="font-black uppercase text-sm tracking-normal text-gray-400">{lang === 'FR' ? 'Aucun Dossier Trouvé' : 'No Applications Found'}</p>
                       </div>
                     )}
                   </div>
@@ -1716,72 +1802,84 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
               )}
 
               {activeTab === 'profile' && (
-                <div className="space-y-12">
+                <div className="space-y-4">
                    {/* Profile Header Card */}
-                   <div className="bg-white p-12 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden group">
-                      <div className="absolute top-0 right-0 w-64 h-64 bg-gray-100 rounded-full -mr-32 -mt-32 transition-transform duration-700 group-hover:scale-110" />
-                      <div className="flex flex-col md:flex-row items-center gap-12 relative z-10">
-                        <div className="relative group/avatar">
-                          <div className="w-48 h-48 bg-gray-900 rounded-[3rem] p-1.5 shadow-sm relative overflow-hidden transition-transform duration-500 group-hover/avatar:rotate-3">
-                             {user.photoURL ? (
-                               <img src={user.photoURL} alt={user.displayName || ''} className="w-full h-full object-cover rounded-[2.5rem]" />
+                   <div className="bg-white p-4 sm:p-8 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
+                      <div className="flex flex-row items-center gap-4 relative z-10">
+                        {/* Avatar compact */}
+                        <div className="relative shrink-0">
+                          <div className="w-20 h-20 sm:w-28 sm:h-28 bg-gray-900 rounded-2xl sm:rounded-3xl overflow-hidden">
+                             {(profile?.photoUrl || profile?.photoURL || user?.photoURL) ? (
+                               <img src={profile?.photoUrl || profile?.photoURL || user?.photoURL || ''} alt={profileForm.fullName || user?.displayName || ''} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                              ) : (
-                               <div className="w-full h-full flex items-center justify-center text-white text-6xl font-black italic">{user.displayName?.charAt(0) || user.email?.charAt(0)}</div>
+                               <div className="w-full h-full flex items-center justify-center text-white text-3xl sm:text-5xl font-black">{(profileForm.fullName || user?.displayName)?.charAt(0)?.toUpperCase() || '?'}</div>
                              )}
                           </div>
-                          <button className="absolute -bottom-4 -right-4 w-12 h-12 bg-gray-900 text-white rounded-2xl flex items-center justify-center shadow-sm border-4 border-white active:scale-90 transition-all hover:rotate-12">
-                             <PlusIcon className="w-6 h-6" />
+                          <button className="absolute -bottom-2 -right-2 w-7 h-7 sm:w-9 sm:h-9 bg-gray-900 text-white rounded-xl flex items-center justify-center shadow border-2 border-white active:scale-90 transition-all">
+                             <PlusIcon className="w-4 h-4" />
                           </button>
                         </div>
                         
-                        <div className="flex-1 text-center md:text-left">
-                          <div className="flex flex-wrap justify-center md:justify-start items-center gap-4 mb-4">
-                            <h3 className="text-4xl font-black text-gray-900 font-semibold">{user.displayName || user.email?.split('@')[0]}</h3>
-                            <div className="px-5 py-1.5 bg-green-50 text-green-600 border border-green-100 rounded-full text-[10px] font-black uppercase tracking-normal flex items-center gap-2 shadow-sm">
-                              <ShieldCheck size={14} /> {lang === 'FR' ? 'Vérifié' : 'Verified'}
+                        {/* Info */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-2 mb-1">
+                            <h3 className="text-base sm:text-2xl font-black text-gray-900 truncate max-w-[200px] sm:max-w-none">{profileForm.fullName || user?.displayName || user?.email?.split('@')[0]}</h3>
+                            <div className="px-2 py-0.5 bg-green-50 text-green-600 border border-green-100 rounded-full text-[9px] font-black uppercase tracking-wide flex items-center gap-1 shrink-0">
+                              <ShieldCheck size={10} /> {lang === 'FR' ? 'Vérifié' : 'Verified'}
                             </div>
                           </div>
-                          <p className="text-gray-400 font-bold text-lg mb-8 italic">{user.email}</p>
-                          <div className="flex flex-wrap justify-center md:justify-start gap-4">
-                            <div className="px-6 py-3 bg-gray-100 rounded-2xl flex items-center gap-3">
-                              <MapPin size={16} className="text-gray-900" />
-                              <span className="text-[10px] font-black uppercase text-gray-900 italic">{profileForm.address || 'Djibouti'}</span>
-                            </div>
-                            <div className="px-6 py-3 bg-gray-100 rounded-2xl flex items-center gap-3">
-                              <Briefcase size={16} className="text-gray-900" />
-                              <span className="text-[10px] font-black uppercase text-gray-900 italic">{profileForm.experience} {lang === 'FR' ? 'Ans d\'Exp.' : 'Years Exp.'}</span>
-                            </div>
+                          {/* Masquer email fictif vediorgm.candidate */}
+                          {user?.email && !user.email.endsWith('@vediorgm.candidate') && (
+                            <p className="text-gray-400 text-xs font-medium mb-2 truncate">{user.email}</p>
+                          )}
+                          <div className="flex flex-wrap gap-2 mt-2">
+                            {(profileForm.address && profileForm.address.length > 2) && (
+                              <div className="px-3 py-1.5 bg-gray-100 rounded-xl flex items-center gap-1.5">
+                                <MapPin size={11} className="text-gray-600 shrink-0" />
+                                <span className="text-[10px] font-black uppercase text-gray-700">{profileForm.address}</span>
+                              </div>
+                            )}
+                            {profileForm.experience && profileForm.experience !== '0 (Sans expérience)' && (
+                              <div className="px-3 py-1.5 bg-gray-100 rounded-xl flex items-center gap-1.5">
+                                <Briefcase size={11} className="text-gray-600 shrink-0" />
+                                <span className="text-[10px] font-black uppercase text-gray-700">{profileForm.experience}</span>
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>
                    </div>
 
-                   <form onSubmit={handleSaveProfile} className="grid lg:grid-cols-2 gap-10">
+                   <form onSubmit={handleSaveProfile} className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                       {/* Personal Details Card */}
-                      <div className="bg-white p-12 rounded-xl border border-gray-100 shadow-sm space-y-10">
+                      <div className="bg-white p-4 sm:p-8 rounded-xl border border-gray-100 shadow-sm space-y-5">
                         <div className="flex items-center gap-4 mb-2">
-                           <div className="w-12 h-12 bg-gray-900 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-gray-200/20">
-                             <User size={24} />
+                           <div className="w-9 h-9 bg-gray-900 text-white rounded-xl flex items-center justify-center">
+                             <User size={18} />
                            </div>
                            <h3 className="text-xl font-black text-gray-900 font-semibold">{lang === 'FR' ? 'Identité & Contact' : 'Identity & Contact'}</h3>
                         </div>
 
-                        <div className="grid sm:grid-cols-2 gap-8">
-                          <div className="space-y-3">
-                            <label className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 ml-2 italic">{lang === 'FR' ? 'Nom Complet' : 'Full Name'}</label>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-black uppercase tracking-[0.15em] text-gray-400 ml-1 flex items-center gap-1">
+                              {lang === 'FR' ? 'Nom Complet' : 'Full Name'}
+                              <span className="text-gray-300" title={lang === 'FR' ? 'Non modifiable' : 'Not editable'}>🔒</span>
+                            </label>
                             <input 
                               type="text" 
                               value={profileForm.fullName}
-                              onChange={(e) => setProfileForm({...profileForm, fullName: e.target.value})}
-                              className="w-full bg-gray-100 border border-transparent px-8 py-5 rounded-3xl text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all outline-none" 
+                              readOnly
+                              disabled
+                              className="w-full bg-gray-50 border border-gray-100 px-4 py-3 rounded-xl text-sm font-bold text-gray-400 outline-none cursor-not-allowed select-none" 
                             />
                           </div>
-                          <div className="space-y-3">
-                            <label className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 ml-2 italic">{lang === 'FR' ? 'Nationalité' : 'Nationality'}</label>
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-black uppercase tracking-[0.15em] text-gray-400 ml-1">{lang === 'FR' ? 'Nationalité' : 'Nationality'}</label>
                             <select
                               value={profileForm.nationality}
                               onChange={(e) => setProfileForm({...profileForm, nationality: e.target.value})}
-                              className="w-full bg-gray-100 border border-transparent px-8 py-5 rounded-3xl text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all outline-none appearance-none"
+                              className="w-full bg-gray-100 border border-transparent px-4 py-3 rounded-xl text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all outline-none appearance-none"
                             >
                               <option value="">{lang === 'FR' ? '-- Sélectionnez --' : '-- Select --'}</option>
                               {[
@@ -1808,22 +1906,33 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                               ))}
                             </select>
                           </div>
-                          <div className="space-y-3">
-                            <label className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 ml-2 italic">{lang === 'FR' ? 'Téléphone' : 'Phone'}</label>
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-black uppercase tracking-[0.15em] text-gray-400 ml-1 flex items-center gap-1">
+                              {lang === 'FR' ? 'Téléphone' : 'Phone'}
+                              <span className="text-gray-300" title={lang === 'FR' ? 'Non modifiable' : 'Not editable'}>🔒</span>
+                            </label>
                             <input 
                               type="tel" 
                               value={profileForm.phone}
-                              onChange={(e) => setProfileForm({...profileForm, phone: e.target.value})}
-                              className="w-full bg-gray-100 border border-transparent px-8 py-5 rounded-3xl text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all outline-none" 
+                              readOnly
+                              disabled
+                              className="w-full bg-gray-50 border border-gray-100 px-4 py-3 rounded-xl text-sm font-bold text-gray-400 outline-none cursor-not-allowed select-none" 
                             />
                           </div>
-                          <div className="space-y-3">
-                            <label className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 ml-2 italic">{lang === 'FR' ? 'Date de Naissance' : 'Birth Date'}</label>
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-black uppercase tracking-[0.15em] text-gray-400 ml-1">{lang === 'FR' ? 'Date de Naissance' : 'Birth Date'}</label>
                             <input 
-                              type="date" 
+                              type="text" 
                               value={profileForm.birthDate}
-                              onChange={(e) => setProfileForm({...profileForm, birthDate: e.target.value})}
-                              className="w-full bg-gray-100 border border-transparent px-8 py-5 rounded-3xl text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all outline-none appearance-none" 
+                              onChange={(e) => {
+                                let v = e.target.value.replace(/[^0-9]/g, '');
+                                if (v.length >= 3) v = v.slice(0,2) + '/' + v.slice(2);
+                                if (v.length >= 6) v = v.slice(0,5) + '/' + v.slice(5,9);
+                                setProfileForm({...profileForm, birthDate: v.slice(0,10)});
+                              }}
+                              placeholder="jj/mm/aaaa"
+                              maxLength={10}
+                              className="w-full bg-gray-100 border border-transparent px-4 py-3 rounded-xl text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all outline-none" 
                             />
                           </div>
                           <div className="space-y-3 sm:col-span-2">
@@ -1832,63 +1941,100 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                               type="text" 
                               value={profileForm.address}
                               onChange={(e) => setProfileForm({...profileForm, address: e.target.value})}
-                              placeholder="Ex: Plateau du Serpent, Djibouti"
-                              className="w-full bg-gray-100 border border-transparent px-8 py-5 rounded-3xl text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all outline-none" 
+                              placeholder={lang === 'FR' ? 'Ex: Plateau du Serpent, Djibouti' : lang === 'AR' ? 'مثال: حي البلاط، جيبوتي' : 'Ex: Plateau du Serpent, Djibouti'}
+                              minLength={5}
+                              className={`w-full bg-gray-100 border px-4 py-3 rounded-xl text-sm font-bold text-gray-900 focus:bg-white transition-all outline-none ${profileForm.address && profileForm.address.length < 5 ? 'border-red-300 bg-red-50' : 'border-transparent focus:border-gray-300'}`}
                             />
+                            {profileForm.address && profileForm.address.length < 5 && (
+                              <p className="text-[10px] text-red-500 font-bold ml-1">
+                                {lang === 'FR' ? '⚠️ Adresse trop courte (min. 5 caractères)' : lang === 'AR' ? '⚠️ العنوان قصير جداً' : '⚠️ Address too short (min. 5 characters)'}
+                              </p>
+                            )}
                           </div>
                           <div className="space-y-3">
                             <label className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 ml-2 italic uppercase tracking-tighter">{lang === 'FR' ? 'Sexe' : 'Gender'}</label>
                             <select 
                               value={profileForm.gender}
                               onChange={(e) => setProfileForm({...profileForm, gender: e.target.value})}
-                              className="w-full bg-gray-100 border border-transparent px-8 py-5 rounded-3xl text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all outline-none appearance-none"
+                              className="w-full bg-gray-100 border border-transparent px-4 py-3 rounded-xl text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all outline-none appearance-none"
                             >
                               <option value="M">{lang === 'FR' ? 'Masculin' : 'Male'}</option>
                               <option value="F">{lang === 'FR' ? 'Féminin' : 'Female'}</option>
                             </select>
                           </div>
-                          <div className="space-y-3">
-                            <label className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 ml-2 italic">{lang === 'FR' ? 'Disponibilité' : 'Availability'}</label>
-                            <input 
-                              type="text" 
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-black uppercase tracking-[0.15em] text-gray-400 ml-1">{lang === 'FR' ? 'Disponibilité' : 'Availability'}</label>
+                            <select
                               value={profileForm.availability}
                               onChange={(e) => setProfileForm({...profileForm, availability: e.target.value})}
-                              className="w-full bg-gray-100 border border-transparent px-8 py-5 rounded-3xl text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all outline-none" 
-                            />
+                              className="w-full bg-gray-100 border border-transparent px-4 py-3 rounded-xl text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all outline-none appearance-none"
+                            >
+                              <option value="Immediate">{lang === 'FR' ? 'Immédiate' : lang === 'AR' ? 'فوري' : 'Immediate'}</option>
+                              <option value="1 mois">{lang === 'FR' ? '1 mois' : lang === 'AR' ? 'شهر واحد' : '1 month'}</option>
+                              <option value="2 mois">{lang === 'FR' ? '2 mois' : lang === 'AR' ? 'شهران' : '2 months'}</option>
+                              <option value="3 mois">{lang === 'FR' ? '3 mois' : lang === 'AR' ? '3 أشهر' : '3 months'}</option>
+                              <option value="6 mois">{lang === 'FR' ? '6 mois' : lang === 'AR' ? '6 أشهر' : '6 months'}</option>
+                              <option value="Non disponible">{lang === 'FR' ? 'Non disponible' : lang === 'AR' ? 'غير متاح' : 'Not available'}</option>
+                            </select>
                           </div>
                         </div>
                       </div>
 
                       {/* Experience & Education Card */}
-                      <div className="bg-white p-12 rounded-xl border border-gray-100 shadow-sm flex flex-col justify-between">
-                        <div className="space-y-10">
+                      <div className="bg-white p-4 sm:p-6 rounded-xl border border-gray-100 shadow-sm flex flex-col justify-between">
+                        <div className="space-y-5">
                           <div className="flex items-center gap-4">
-                             <div className="w-12 h-12 bg-gray-900 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-gray-200/20">
+                             <div className="w-9 h-9 bg-gray-900 text-white rounded-xl flex items-center justify-center">
                                <FileText size={24} />
                              </div>
                              <h3 className="text-xl font-black text-gray-900 font-semibold">{lang === 'FR' ? 'Parcours & CV' : 'Background & CV'}</h3>
                           </div>
 
-                          <div className="space-y-8">
+                          <div className="space-y-4">
                             <div className="space-y-3">
                               <label className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 ml-2 italic">{lang === 'FR' ? 'Dernier Diplôme ou Formation' : 'Last Degree or Training'}</label>
-                              <input 
-                                type="text" 
-                                value={profileForm.education}
-                                onChange={(e) => setProfileForm({...profileForm, education: e.target.value})}
-                                placeholder="Ex: Licence en Management" 
-                                className="w-full bg-gray-100 border border-transparent px-8 py-5 rounded-3xl text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all outline-none" 
-                              />
+                              {dynEducations.length > 0 ? (
+                                <select
+                                  value={profileForm.education}
+                                  onChange={(e) => setProfileForm({...profileForm, education: e.target.value})}
+                                  className="w-full bg-gray-100 border border-transparent px-4 py-3 rounded-xl text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all outline-none appearance-none"
+                                >
+                                  <option value="">{lang === 'FR' ? '— Sélectionner —' : lang === 'AR' ? '— اختر —' : '— Select —'}</option>
+                                  {dynEducations.map((e: any) => <option key={e.id} value={e.value || e.label}>{e.label}</option>)}
+                                </select>
+                              ) : (
+                                <select
+                                  value={profileForm.education}
+                                  onChange={(e) => setProfileForm({...profileForm, education: e.target.value})}
+                                  className="w-full bg-gray-100 border border-transparent px-4 py-3 rounded-xl text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all outline-none appearance-none"
+                                >
+                                  <option value="">{lang === 'FR' ? '— Sélectionner —' : lang === 'AR' ? '— اختر —' : '— Select —'}</option>
+                                  <option value="Sans diplôme">{lang === 'FR' ? 'Sans diplôme' : lang === 'AR' ? 'بدون شهادة' : 'No diploma'}</option>
+                                  <option value="BEP/CAP">{lang === 'FR' ? 'BEP / CAP' : lang === 'AR' ? 'شهادة مهنية' : 'Vocational cert.'}</option>
+                                  <option value="Baccalauréat">{lang === 'FR' ? 'Baccalauréat' : lang === 'AR' ? 'البكالوريا' : 'High school diploma'}</option>
+                                  <option value="Bac+2">{lang === 'FR' ? 'Bac+2 (BTS/DUT)' : lang === 'AR' ? 'دبلوم' : 'Associate degree'}</option>
+                                  <option value="Licence">{lang === 'FR' ? 'Licence (Bac+3)' : lang === 'AR' ? 'ليسانس' : 'Bachelor'}</option>
+                                  <option value="Master">{lang === 'FR' ? 'Master (Bac+5)' : lang === 'AR' ? 'ماستر' : 'Master'}</option>
+                                  <option value="Doctorat">{lang === 'FR' ? 'Doctorat' : lang === 'AR' ? 'دكتوراه' : 'PhD'}</option>
+                                  <option value="Formation professionnelle">{lang === 'FR' ? 'Formation professionnelle' : lang === 'AR' ? 'تدريب مهني' : 'Professional training'}</option>
+                                </select>
+                              )}
                             </div>
                             <div className="space-y-3">
                               <label className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 ml-2 italic">{lang === 'FR' ? 'Années d\'Expérience Totales' : 'Total Years of Experience'}</label>
-                              <input 
-                                type="number" 
+                              <select
                                 value={profileForm.experience}
                                 onChange={(e) => setProfileForm({...profileForm, experience: e.target.value})}
-                                placeholder="Ex: 5" 
-                                className="w-full bg-gray-100 border border-transparent px-8 py-5 rounded-3xl text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all outline-none" 
-                              />
+                                className="w-full bg-gray-100 border border-transparent px-4 py-3 rounded-xl text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all outline-none appearance-none"
+                              >
+                                <option value="">{lang === 'FR' ? '— Sélectionner —' : lang === 'AR' ? '— اختر —' : '— Select —'}</option>
+                                <option value="0">{lang === 'FR' ? 'Aucune expérience' : lang === 'AR' ? 'لا خبرة' : 'No experience'}</option>
+                                <option value="1">{lang === 'FR' ? 'Moins d\'1 an' : lang === 'AR' ? 'أقل من سنة' : 'Less than 1 year'}</option>
+                                <option value="1-2">{lang === 'FR' ? '1 – 2 ans' : lang === 'AR' ? '1-2 سنة' : '1 – 2 years'}</option>
+                                <option value="3-5">{lang === 'FR' ? '3 – 5 ans' : lang === 'AR' ? '3-5 سنوات' : '3 – 5 years'}</option>
+                                <option value="5-10">{lang === 'FR' ? '5 – 10 ans' : lang === 'AR' ? '5-10 سنوات' : '5 – 10 years'}</option>
+                                <option value="10+">{lang === 'FR' ? 'Plus de 10 ans' : lang === 'AR' ? 'أكثر من 10 سنوات' : 'More than 10 years'}</option>
+                              </select>
                             </div>
                             
                             <div className="pt-6 relative group/cv">
@@ -1907,15 +2053,15 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                                />
 
                                {cvUrl ? (
-                                 <div className="bg-gray-900 rounded-3xl p-8 text-white relative overflow-hidden shadow-sm transition-all duration-500 hover:scale-[1.02] -skew-x-2">
-                                   <div className="absolute top-0 right-0 w-32 h-32 bg-gray-100 rounded-full blur-3xl -mr-16 -mt-16" />
-                                   <div className="relative z-10 flex items-center justify-between skew-x-2">
-                                     <div className="flex items-center gap-6">
-                                       <div className="w-16 h-16 bg-white/10 rounded-2xl flex items-center justify-center">
-                                         <FileText size={32} className="text-gray-900" />
+                                 <div className="bg-gray-900 rounded-2xl p-4 text-white relative overflow-hidden shadow-sm">
+                                   <div className="absolute top-0 right-0 w-16 h-16 bg-gray-100 rounded-full blur-3xl -mr-8 -mt-8" />
+                                   <div className="relative z-10 flex items-center justify-between">
+                                     <div className="flex items-center gap-3">
+                                       <div className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center">
+                                         <FileText size={20} className="text-gray-900" />
                                        </div>
                                        <div>
-                                         <p className="text-sm font-black font-semibold mb-1">{cvFileName || 'CV.pdf'}</p>
+                                         <p className="text-sm font-black mb-0.5">{cvFileName || 'CV.pdf'}</p>
                                          <p className="text-[8px] font-bold text-white/40 uppercase tracking-normal">{lang === 'FR' ? 'CV enregistré ✓' : 'CV saved ✓'}</p>
                                        </div>
                                      </div>
@@ -1937,7 +2083,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                                    type="button"
                                    onClick={() => cvInputRef.current?.click()}
                                    disabled={cvUploading}
-                                   className="w-full border-2 border-dashed border-gray-200 rounded-3xl p-10 flex flex-col items-center gap-4 hover:border-gray-300 hover:bg-gray-100 transition-all group/upload disabled:opacity-60"
+                                   className="w-full border-2 border-dashed border-gray-200 rounded-2xl p-5 flex flex-col items-center gap-2 hover:border-gray-300 hover:bg-gray-100 transition-all group/upload disabled:opacity-60"
                                  >
                                    {cvUploading ? (
                                      <>
@@ -1963,7 +2109,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                         </div>
 
                         {/* ID Document Card */}
-                        <div className="bg-white rounded-[2rem] border border-navy/5 shadow-sm p-8 space-y-6">
+                        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 sm:p-6 space-y-4">
                           <h3 className="text-xl font-black text-gray-900 font-semibold">
                             {lang === 'FR' ? '🪪 Pièce d\'Identité' : '🪪 Identity Document'}
                           </h3>
@@ -2002,7 +2148,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                           />
 
                           {idUrl ? (
-                            <div className="bg-gray-900 rounded-3xl p-6 text-white relative overflow-hidden shadow-sm">
+                            <div className="bg-gray-900 rounded-2xl p-4 sm:p-6 text-white relative overflow-hidden shadow-sm">
                               <div className="absolute top-0 right-0 w-24 h-24 bg-gray-100 rounded-full blur-3xl -mr-12 -mt-12" />
                               <div className="relative z-10 flex items-center justify-between">
                                 <div className="flex items-center gap-4">
@@ -2032,7 +2178,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                               type="button"
                               onClick={() => idInputRef.current?.click()}
                               disabled={idUploading}
-                              className="w-full border-2 border-dashed border-gray-200 rounded-3xl p-8 flex flex-col items-center gap-3 hover:border-gray-300 hover:bg-gray-100 transition-all disabled:opacity-60"
+                              className="w-full border-2 border-dashed border-gray-200 rounded-2xl p-5 flex flex-col items-center gap-2 hover:border-gray-300 hover:bg-gray-100 transition-all disabled:opacity-60"
                             >
                               {idUploading ? (
                                 <>
@@ -2073,25 +2219,25 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
               )}
 
               {activeTab === 'offers' && (
-                <div className="space-y-8">
+                <div className="space-y-4">
                   {/* Title section */}
                   <div>
-                    <h2 className="text-4xl font-black text-[#0f1f3d] mb-1">
+                    <h2 className="text-2xl font-black text-[#0f1f3d] mb-0.5">
                       Opportunités{' '}
-                      <span className="text-[#1a56db] italic underline decoration-[#1a56db] decoration-4 underline-offset-4">Directes</span>
+                      <span className="text-[#1a56db] italic underline decoration-[#1a56db] decoration-2 underline-offset-2">Directes</span>
                     </h2>
-                    <p className="text-sm text-gray-400 font-medium">
-                      {lang === 'FR' ? "Trouvez l'emploi qui correspond à votre profil expert." : 'Find the job that matches your expert profile.'}
+                    <p className="text-xs text-gray-400 font-medium">
+                      {lang === 'FR' ? "Trouvez l'emploi qui correspond à votre profil." : "Find the job that matches your profile."}
                     </p>
                   </div>
 
                   {/* Stat pills */}
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
                     {[
                       { icon: Briefcase,    color: 'bg-blue-100 text-gray-700',   val: jobs.length,             label: lang === 'FR' ? 'Offres disponibles'    : 'Available offers' },
                       { icon: Send,         color: 'bg-purple-100 text-purple-500', val: applications.length,   label: lang === 'FR' ? 'Candidatures envoyées' : 'Applications sent' },
                       { icon: Star,         color: 'bg-gray-900-100 text-gray-900-500', val: savedJobs.length,      label: lang === 'FR' ? 'Favoris'               : 'Favorites' },
-                      { icon: CheckCircle2, color: 'bg-green-100 text-green-600',  val: profile?.profileComplete ? '100%' : '0%', label: lang === 'FR' ? 'Profil complété' : 'Profile completed' },
+                      { icon: CheckCircle2, color: 'bg-green-100 text-green-600',  val: `${Math.round(([!!profileForm.fullName,!!profileForm.phone,!!profileForm.nationality,!!profileForm.birthDate,!!profileForm.address,!!profileForm.education,!!profileForm.experience,!!profileForm.languages,!!cvUrl,!!idUrl].filter(Boolean).length/10)*100)}%`, label: 'Profile complete' },
                     ].map((s, i) => (
                       <div key={i} className="bg-white rounded-2xl px-5 py-4 flex items-center gap-4 shadow-sm border border-gray-100">
                         <div className={`w-11 h-11 rounded-xl ${s.color} flex items-center justify-center shrink-0`}>
@@ -2106,7 +2252,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                   </div>
 
                   {/* Job cards grid */}
-                  <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
                     {jobs.length > 0 ? (
                       jobs.map((job, idx) => {
                         // Thematic gradient banners per sector
@@ -2123,9 +2269,9 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                         return (
                           <div key={job.id} className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100 hover:shadow-lg transition-all flex flex-col group">
                             {/* Banner image area */}
-                            <div className={`relative h-36 bg-gradient-to-br ${grad} flex items-center justify-center overflow-hidden`}>
-                              <div className="w-16 h-16 rounded-2xl bg-white/60 backdrop-blur-sm flex items-center justify-center shadow-md">
-                                <Briefcase size={30} className="text-[#1a56db]" />
+                            <div className={`relative h-16 bg-gradient-to-br ${grad} flex items-center justify-center overflow-hidden`}>
+                              <div className="w-10 h-10 rounded-xl bg-white/60 backdrop-blur-sm flex items-center justify-center shadow-md">
+                                <Briefcase size={18} className="text-[#1a56db]" />
                               </div>
                               {/* Favorite button */}
                               <button
@@ -2219,7 +2365,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-normal italic">{lang === 'FR' ? 'Votre curation personnelle des meilleures opportunités' : 'Your personal curation of top tier roles'}</p>
                    </div>
                    
-                   <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-10">
+                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
                       {jobs.filter(j => savedJobs.includes(j.id)).length > 0 ? (
                         jobs.filter(j => savedJobs.includes(j.id)).map(job => (
                         <div key={job.id} className="bg-white p-10 rounded-[4rem] border border-gray-100 shadow-sm hover:shadow-sm transition-all group relative overflow-hidden flex flex-col h-full hover:scale-[1.02] duration-500">
@@ -2261,86 +2407,85 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
               )}
 
               {activeTab === 'messages' && (
-                <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col h-[750px] relative">
-                   <div className="p-10 border-b border-navy/5 bg-gray-900 text-white flex items-center justify-between relative overflow-hidden">
-                      <div className="absolute top-0 right-0 w-64 h-64 bg-gray-100 rounded-full blur-3xl -mr-32 -mt-32" />
-                      <div className="flex items-center gap-6 relative z-10">
+                <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col h-[calc(100vh-180px)] sm:h-[750px] relative">
+                   <div className="p-3 sm:p-4 border-b border-gray-100 bg-gray-900 text-white flex items-center justify-between relative overflow-hidden">
+                      <div className="absolute top-0 right-0 w-32 h-32 bg-gray-100 rounded-full blur-3xl -mr-16 -mt-16" />
+                      <div className="flex items-center gap-3 relative z-10">
                          <div className="relative">
-                           <div className="w-16 h-16 bg-white/10 backdrop-blur-xl rounded-2xl flex items-center justify-center border border-white/10 shadow-sm">
-                              <MessageSquare size={32} className="text-gray-900" />
+                           <div className="w-10 h-10 bg-white/10 backdrop-blur-xl rounded-xl flex items-center justify-center border border-white/10">
+                              <MessageSquare size={18} className="text-gray-900" />
                            </div>
-                           <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-green-500 border-4 border-gray-300 rounded-full animate-pulse" />
+                           <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-500 border-2 border-gray-300 rounded-full" />
                          </div>
                          <div>
-                            <h2 className="text-2xl font-black font-semibold leading-none mb-2">{lang === 'FR' ? 'Vedior Direct' : 'Vedior Direct'}</h2>
-                            <p className="text-[10px] font-bold text-white/40 uppercase tracking-normal flex items-center gap-2">
-                              <span className="w-2 h-2 bg-gray-900 rounded-full" />
+                            <h2 className="text-base font-black leading-none mb-0.5">{lang === 'FR' ? 'Vedior Direct' : 'Vedior Direct'}</h2>
+                            <p className="text-[9px] font-bold text-white/40 uppercase tracking-normal">
                               {lang === 'FR' ? 'Ligne de recrutement sécurisée' : 'Secure recruitment line'}
                             </p>
                          </div>
                       </div>
-                      <button className="p-4 bg-white/5 border border-white/10 rounded-2xl text-white/40 hover:text-gray-900 hover:bg-white/10 transition-all relative z-10 border-dashed">
-                        <MoreVertical size={20} />
+                      <button className="p-2 bg-white/5 border border-white/10 rounded-xl text-white/40 hover:text-gray-900 hover:bg-white/10 transition-all relative z-10">
+                        <MoreVertical size={16} />
                       </button>
                    </div>
 
-                   <div className="flex-1 overflow-y-auto p-12 space-y-8 bg-white">
+                   <div className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-5 sm:space-y-8 bg-white">
                       {messages.length > 0 ? (
                         messages.map((msg) => (
-                           <div key={msg.id} className={`flex flex-col ${msg.senderId === user.uid ? 'items-end' : 'items-start'}`}>
+                           <div key={msg.id} className={`flex flex-col ${msg.senderId === user?.uid ? 'items-end' : 'items-start'}`}>
                               <div className={`max-w-[80%] p-8 rounded-[3rem] shadow-sm relative group overflow-hidden ${
-                                msg.senderId === user.uid 
+                                msg.senderId === user?.uid 
                                   ? 'bg-gray-900 text-white rounded-tr-none shadow-gray-200/20' 
                                   : 'bg-white text-gray-900 rounded-tl-none border border-navy/5 shadow-sm shadow-gray-200/5'
                               }`}>
-                                 {msg.senderId === user.uid && (
+                                 {msg.senderId === user?.uid && (
                                    <div className="absolute top-0 left-0 w-full h-1 bg-gray-900 opacity-0 group-hover:opacity-100 transition-opacity" />
                                  )}
                                  <p className="text-[14px] font-bold leading-[1.6]">{msg.text}</p>
-                                 <div className={`flex items-center gap-2 mt-4 opacity-40 text-[9px] font-semibold ${msg.senderId === user.uid ? 'justify-end' : 'justify-start'}`}>
+                                 <div className={`flex items-center gap-2 mt-4 opacity-40 text-[9px] font-semibold ${msg.senderId === user?.uid ? 'justify-end' : 'justify-start'}`}>
                                     {msg.createdAt?.seconds ? new Date(msg.createdAt.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
-                                    {msg.senderId === user.uid && <CheckCircle2 size={10} className="text-gray-900" />}
+                                    {msg.senderId === user?.uid && <CheckCircle2 size={10} className="text-gray-900" />}
                                  </div>
                               </div>
                            </div>
                         ))
                       ) : (
-                         <div className="h-full flex flex-col items-center justify-center text-gray-400 gap-10">
-                            <div className="w-32 h-32 bg-gray-100 rounded-[3rem] flex items-center justify-center animate-bounce">
-                               <MessageSquare size={64} strokeWidth={1} />
+                         <div className="h-full flex flex-col items-center justify-center text-gray-400 gap-4">
+                            <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center">
+                               <MessageSquare size={32} strokeWidth={1} />
                             </div>
                             <div className="text-center">
-                               <p className="text-lg font-black font-semibold text-gray-400 mb-2">{lang === 'FR' ? 'Démarrez la conversation' : 'Start the conversation'}</p>
-                               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-normal">{lang === 'FR' ? 'Posez vos questions à l\'équipe recrutement' : 'Ask our recruitment team anything'}</p>
+                               <p className="text-sm font-black text-gray-400 mb-1">{lang === 'FR' ? 'Démarrez la conversation' : 'Start the conversation'}</p>
+                               <p className="text-[10px] font-bold text-gray-300 uppercase tracking-normal">{lang === 'FR' ? 'Posez vos questions à l\'équipe recrutement' : 'Ask our recruitment team anything'}</p>
                             </div>
                          </div>
                       )}
                    </div>
 
-                   <div className="p-10 bg-white border-t border-navy/5 relative">
-                      <form onSubmit={handleSendMessage} className="flex gap-6 items-center">
+                   <div className="p-3 bg-white border-t border-gray-100 relative">
+                      <form onSubmit={handleSendMessage} className="flex gap-3 items-center">
                          <div className="flex-1 relative group">
                             <input 
                               type="text" 
                               value={newMessage}
                               onChange={(e) => setNewMessage(e.target.value)}
-                              placeholder={lang === 'FR' ? 'Votre message professionnel...' : 'Your professional message...'} 
-                              className="w-full bg-gray-100 border-2 border-transparent px-10 py-6 rounded-[2.5rem] outline-none text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all pr-24"
+                              placeholder={lang === 'FR' ? 'Votre message...' : 'Your message...'} 
+                              className="w-full bg-gray-100 border-2 border-transparent px-4 py-3 rounded-2xl outline-none text-sm font-bold text-gray-900 focus:bg-white focus:border-gray-300 transition-all pr-10"
                               disabled={sendingMessage}
                             />
-                            <div className="absolute right-6 top-1/2 -translate-y-1/2 flex gap-2">
-                               <button type="button" className="p-3 text-gray-400 hover:text-gray-900 transition-colors"><PlusIcon className="w-5 h-5" /></button>
+                            <div className="absolute right-3 top-1/2 -translate-y-1/2 flex gap-1">
+                               <button type="button" className="p-1.5 text-gray-400 hover:text-gray-900 transition-colors"><PlusIcon className="w-4 h-4" /></button>
                             </div>
                          </div>
                          <button 
                            type="submit" 
                            disabled={sendingMessage || !newMessage.trim()}
-                           className="bg-gray-900 text-white w-20 h-20 rounded-[2rem] flex items-center justify-center shadow-sm shadow-gray-200/40 hover:scale-105 active:scale-95 transition-all disabled:opacity-50 group shrink-0"
+                           className="bg-gray-900 text-white w-11 h-11 rounded-xl flex items-center justify-center shadow-sm hover:scale-105 active:scale-95 transition-all disabled:opacity-50 group shrink-0"
                          >
                             {sendingMessage ? (
-                              <div className="w-6 h-6 border-4 border-white/30 border-t-white rounded-full animate-spin" />
+                              <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                             ) : (
-                              <Send size={28} className="group-hover:rotate-12 transition-transform" />
+                              <Send size={16} className="group-hover:rotate-12 transition-transform" />
                             )}
                          </button>
                       </form>
@@ -2350,10 +2495,10 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
 
               {activeTab === 'settings' && (
                 <div className="max-w-4xl space-y-12">
-                  <div className="grid md:grid-cols-2 gap-10">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-8">
 
                     {/* Alertes */}
-                    <div className="bg-white p-12 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
+                    <div className="bg-white p-4 sm:p-8 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
                       <div className="absolute top-0 right-0 w-32 h-32 bg-gray-100 rounded-full -mr-16 -mt-16" />
                       <h3 className="text-2xl font-black text-gray-900 font-semibold mb-10 border-l-4 border-gray-300 pl-6">
                         {lang === 'FR' ? 'Alertes Canaux' : 'Channel Alerts'}
@@ -2442,8 +2587,8 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                                   try {
                                     // Supprimer les données Firestore
                                     const { deleteDoc: dd, doc: d2 } = await import('firebase/firestore');
-                                    await dd(d2(db, 'candidateProfiles', user.uid));
-                                    await dd(d2(db, 'users', user.uid));
+                                    await dd(d2(db, 'candidateProfiles', user?.uid));
+                                    await dd(d2(db, 'users', user?.uid));
                                     // Supprimer le compte Firebase Auth
                                     await user.delete();
                                     onBack();
@@ -2480,7 +2625,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
       {/* ── Application Detail Modal ── */}
       {selectedApp && (
         <div 
-          className="fixed inset-0 z-[200] flex items-center justify-center p-6"
+          className="fixed inset-0 z-[200] flex items-end sm:items-center justify-center p-0 sm:p-6"
           style={{ backgroundColor: 'rgba(10,25,47,0.7)', backdropFilter: 'blur(8px)' }}
           onClick={() => setSelectedApp(null)}
         >
@@ -2503,7 +2648,7 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
             </div>
 
             {/* Body */}
-            <div className="p-8 space-y-6">
+            <div className="p-5 space-y-4">
               {/* Status */}
               <div className="flex items-center gap-3">
                 <StatusBadge status={selectedApp.status || 'new'} lang={lang} />
@@ -2513,10 +2658,11 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
               </div>
 
               {/* Info grid */}
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-2 gap-2">
                 {[
                   { label: lang === 'FR' ? 'Nom Complet' : 'Full Name', value: selectedApp.fullName },
-                  { label: lang === 'FR' ? 'Email' : 'Email', value: selectedApp.email },
+                  // Hide fake @vediorgm.candidate emails
+                  ...(!selectedApp.email?.endsWith('@vediorgm.candidate') ? [{ label: lang === 'FR' ? 'Email' : 'Email', value: selectedApp.email || '—' }] : []),
                   { label: lang === 'FR' ? 'Téléphone' : 'Phone', value: selectedApp.phone || '—' },
                   { label: lang === 'FR' ? 'Nationalité' : 'Nationality', value: selectedApp.nationality || '—' },
                   { label: lang === 'FR' ? 'Secteur' : 'Sector', value: selectedApp.sector || '—' },
@@ -2524,27 +2670,27 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
                   { label: lang === 'FR' ? 'Formation' : 'Education', value: selectedApp.education || '—' },
                   { label: lang === 'FR' ? "Années d'exp." : 'Years exp.', value: selectedApp.experience ? `${selectedApp.experience} ans` : '—' },
                 ].map(({ label, value }) => (
-                  <div key={label} className="bg-gray-50 rounded-2xl p-4">
-                    <p className="text-[9px] font-black uppercase tracking-normal text-gray-400 mb-1">{label}</p>
-                    <p className="text-sm font-black text-gray-900">{value}</p>
+                  <div key={label} className="bg-gray-50 rounded-xl p-3">
+                    <p className="text-[9px] font-black uppercase tracking-normal text-gray-400 mb-0.5">{label}</p>
+                    <p className="text-xs font-black text-gray-900 break-words">{value}</p>
                   </div>
                 ))}
               </div>
 
               {/* Address */}
               {selectedApp.address && (
-                <div className="bg-gray-50 rounded-2xl p-4">
-                  <p className="text-[9px] font-black uppercase tracking-normal text-gray-400 mb-1">{lang === 'FR' ? 'Adresse' : 'Address'}</p>
-                  <p className="text-sm font-black text-gray-900">{selectedApp.address}</p>
+                <div className="bg-gray-50 rounded-xl p-3">
+                  <p className="text-[9px] font-black uppercase tracking-normal text-gray-400 mb-0.5">{lang === 'FR' ? 'Adresse' : 'Address'}</p>
+                  <p className="text-xs font-black text-gray-900">{selectedApp.address}</p>
                 </div>
               )}
             </div>
 
             {/* Footer */}
-            <div className="px-8 pb-8">
+            <div className="px-5 pb-5">
               <button
                 onClick={() => setSelectedApp(null)}
-                className="w-full py-4 bg-gray-900 text-white text-[10px] font-black uppercase tracking-normal rounded-2xl hover:bg-gray-900 transition-all"
+                className="w-full py-3 bg-gray-900 text-white text-[10px] font-black uppercase tracking-normal rounded-xl hover:bg-gray-900 transition-all"
               >
                 {lang === 'FR' ? 'Fermer' : 'Close'}
               </button>
@@ -2553,6 +2699,24 @@ export default function CandidatePanel({ onBack }: CandidatePanelProps) {
         </div>
       )}
     </div>
+  );
+}
+
+
+function CandNavItem({ icon: Icon, label, active, onClick, badge }: { icon: any, label: string, active: boolean, onClick: () => void, badge?: number }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`relative w-full flex items-center gap-3 px-4 py-3 rounded-2xl font-bold text-sm transition-all group ${active ? 'bg-gray-900 text-white shadow-lg shadow-gray-200/20' : 'text-gray-400 hover:bg-white/5 hover:text-white'}`}
+    >
+      <Icon size={20} className={active ? '' : 'group-hover:scale-110 transition-transform'} />
+      <span className="truncate">{label}</span>
+      {badge ? (
+        <div className="absolute right-4 w-5 h-5 bg-orange-500 text-white text-[10px] font-black rounded-full flex items-center justify-center">
+          {badge}
+        </div>
+      ) : null}
+    </button>
   );
 }
 

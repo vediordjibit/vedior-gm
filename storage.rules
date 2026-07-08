@@ -1,0 +1,63 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Helpers
+    function isAuth() {
+      return request.auth != null;
+    }
+    function uid() {
+      return request.auth.uid;
+    }
+    function isAdmin() {
+      return isAuth() && (
+        firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid)) ||
+        firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin'
+      );
+    }
+    function isOwnerPath(userId) {
+      return isAuth() && uid() == userId;
+    }
+    function isImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+    function isPDF() {
+      return request.resource.contentType == 'application/pdf';
+    }
+    function isAllowedFile() {
+      return (isImage() || isPDF()) && request.resource.size < 10 * 1024 * 1024; // max 10MB
+    }
+
+    // CV — chaque candidat upload le sien, admin/recruiter peut lire
+    match /cvs/{userId}/{fileName} {
+      allow read: if isAuth();
+      allow write: if isOwnerPath(userId) && isAllowedFile();
+      allow delete: if isOwnerPath(userId) || isAdmin();
+    }
+
+    // Photos de profil
+    match /photos/{userId}/{fileName} {
+      allow read: if true;
+      allow write: if isOwnerPath(userId) && isImage() && request.resource.size < 5 * 1024 * 1024;
+      allow delete: if isOwnerPath(userId) || isAdmin();
+    }
+
+    // Documents identité / diplômes
+    match /documents/{userId}/{fileName} {
+      allow read: if isAuth();
+      allow write: if isOwnerPath(userId) && isAllowedFile();
+      allow delete: if isOwnerPath(userId) || isAdmin();
+    }
+
+    // Assets publics (logos, etc.) — admin seulement
+    match /public/{fileName} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Fallback — refus par défaut
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

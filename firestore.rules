@@ -1,0 +1,132 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuth() {
+      return request.auth != null;
+    }
+    function uid() {
+      return request.auth.uid;
+    }
+    function isOwner(userId) {
+      return isAuth() && uid() == userId;
+    }
+    function isAdminUser() {
+      return isAuth() && exists(/databases/$(database)/documents/admins/$(uid()));
+    }
+
+    // ── JOBS ─────────────────────────────────────────────────────────────────
+    match /jobs/{jobId} {
+      allow read: if true;
+      allow create, update, delete: if isAuth();
+    }
+
+    // ── APPLICATIONS ─────────────────────────────────────────────────────────
+    match /applications/{appId} {
+      allow read, create, update, delete: if isAuth();
+    }
+
+    // ── NEEDS ────────────────────────────────────────────────────────────────
+    match /needs/{needId} {
+      allow read, create, update, delete: if isAuth();
+    }
+
+    // ── RECRUITERS ───────────────────────────────────────────────────────────
+    match /recruiters/{recruiterId} {
+      allow read, create, update, delete: if isAuth();
+    }
+
+    // ── CANDIDATE PROFILES ───────────────────────────────────────────────────
+    match /candidateProfiles/{profileId} {
+      allow read, create, update, delete: if isAuth();
+    }
+
+    // ── USERS ────────────────────────────────────────────────────────────────
+    match /users/{userId} {
+      allow read, create, update, delete: if isAuth();
+    }
+
+    // ── ADMINS ───────────────────────────────────────────────────────────────
+    match /admins/{adminId} {
+      allow read, write: if isAuth();
+    }
+
+    // ── MATCHES ──────────────────────────────────────────────────────────────
+    match /matches/{matchId} {
+      allow read, create, update, delete: if isAuth();
+    }
+
+    // ── MESSAGES ─────────────────────────────────────────────────────────────
+    match /messages/{msgId} {
+      allow read, create, update, delete: if isAuth();
+    }
+
+    // ── DIAGNOSTICS ──────────────────────────────────────────────────────────
+    match /diagnostics/{diagId} {
+      allow read, create, update, delete: if isAuth();
+    }
+
+    // ── NOTIFICATIONS ────────────────────────────────────────────────────────
+    // Chaque utilisateur ne peut lire/modifier que SES propres notifications.
+    // L'admin a un accès complet (panel admin = userId 'admin' stocké en valeur fixe).
+    match /notifications/{notifId} {
+      allow read, update, delete: if isAuth() && (resource.data.userId == uid() || resource.data.userId == 'admin' && isAdminUser());
+      allow create: if isAuth();
+    }
+
+    // ── SUBSCRIPTIONS ────────────────────────────────────────────────────────
+    match /subscriptions/{subId} {
+      allow read, create, update, delete: if isAuth();
+    }
+
+    // ── PAYMENTS ─────────────────────────────────────────────────────────────
+    match /payments/{paymentId} {
+      allow read, write: if isAuth();
+    }
+
+    // ── PROPOSITIONS ─────────────────────────────────────────────────────────
+    match /propositions/{propId} {
+      allow read, create, update, delete: if isAuth();
+    }
+
+    // ── CANDIDATES ───────────────────────────────────────────────────────────
+    match /candidates/{candidateId} {
+      allow read, write: if isAuth();
+    }
+
+    // ── CVS ──────────────────────────────────────────────────────────────────
+    match /cvs/{cvId} {
+      allow read, write: if isAuth();
+    }
+
+    // ── SETTINGS (config générale) ────────────────────────────────────────────
+    match /settings/{docId} {
+      allow read: if true;
+      allow write: if isAuth();
+    }
+
+    // ── SETTINGS DYNAMIQUES — lecture publique, écriture authentifiée ─────────
+    match /settings_sectors/{docId}        { allow read: if true; allow write: if isAuth(); }
+    match /settings_contracts/{docId}      { allow read: if true; allow write: if isAuth(); }
+    match /settings_urgencies/{docId}      { allow read: if true; allow write: if isAuth(); }
+    match /settings_salaries/{docId}       { allow read: if true; allow write: if isAuth(); }
+    match /settings_roles/{docId}          { allow read: if true; allow write: if isAuth(); }
+    match /settings_locations/{docId}      { allow read: if true; allow write: if isAuth(); }
+    match /settings_education/{docId}      { allow read: if true; allow write: if isAuth(); }
+    match /settings_educations/{docId}     { allow read: if true; allow write: if isAuth(); }
+    match /settings_availabilities/{docId} { allow read: if true; allow write: if isAuth(); }
+    match /settings_nationalities/{docId}  { allow read: if true; allow write: if isAuth(); }
+    match /settings_languages/{docId}      { allow read: if true; allow write: if isAuth(); }
+    match /settings_pricing/{docId}        { allow read: if true; allow write: if isAuth(); }
+    match /settings_company/{docId}        { allow read: if true; allow write: if isAuth(); }
+    match /settings_matching/{docId}       { allow read: if true; allow write: if isAuth(); }
+    match /settings_experiences/{docId}    { allow read: if true; allow write: if isAuth(); }
+    match /settings_job_titles/{docId}     { allow read: if true; allow write: if isAuth(); }
+
+    // ── FALLBACK — toute collection non listée accessible si connecté ─────────
+    match /{collection}/{docId} {
+      allow read, write: if isAuth();
+    }
+
+  }
+}
