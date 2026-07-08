@@ -12,8 +12,14 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@apphosting/adapter-nextjs": "14.0.10",
     "@emailjs/browser": "^4.4.1",
     "@tailwindcss/postcss": "^4.3.2",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.6",
     "firebase": "^12.13.0",
     "framer-motion": "^12.38.0",
     "lucide-react": "^1.16.0",
@@ -24,15 +30,8 @@
     "react-router-dom": "^7.17.0",
     "recharts": "^3.8.1",
     "resend": "^6.12.3",
-    "tailwindcss": "^4.3.2"
-  },
-  "devDependencies": {
-    "@apphosting/adapter-nextjs": "^14.0.21",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.2.6",
+    "tailwindcss": "^4.3.2",
     "typescript": "^5"
-  }
+  },
+  "devDependencies": {}
 }
