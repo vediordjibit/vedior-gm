@@ -1941,7 +1941,7 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
               type: 'candidate',
               fullName: newUser.fullName || '',
               email: newUser.email,
-              vgmId: tempId,
+              phone: newUser.phone || '',
               tempPassword,
             }),
           });
