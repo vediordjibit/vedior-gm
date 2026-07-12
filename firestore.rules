@@ -14,6 +14,38 @@ service cloud.firestore {
     function isAdminUser() {
       return isAuth() && exists(/databases/$(database)/documents/admins/$(uid()));
     }
+    // Doc miroir maintenu par Cloud Function (functions/index.js) — 1 doc par uid,
+    // contient : plan, planStatus, planExpiry, activeJobsCount, freeJobsLimit, proJobsLimit
+    function recruiterLimits() {
+      return get(/databases/$(database)/documents/recruiterLimits/$(uid())).data;
+    }
+    function jobLimitOk() {
+      let lim = recruiterLimits();
+      let isPro = lim.plan == 'pro' && lim.planStatus == 'active';
+      let limit = isPro ? lim.proJobsLimit : lim.freeJobsLimit;
+      return limit == -1 || lim.activeJobsCount < limit;
+    }
+    // ── Plafond mensuel de demandes (freeRequestsLimit) — Free uniquement.
+    // Distinct de jobLimitOk() : ici on compte les demandes CRÉÉES ce mois-ci
+    // (peu importe leur statut actuel), pas les offres actives simultanées.
+    // Le Pro n'est jamais bloqué par ce plafond (déjà régi par jobLimitOk()).
+    function requestLimitOk() {
+      let lim = recruiterLimits();
+      let isPro = lim.plan == 'pro' && lim.planStatus == 'active';
+      return isPro
+        || lim.freeRequestsLimit == -1
+        || lim.requestsThisMonth < lim.freeRequestsLimit;
+    }
+    // ── Accès à la base candidats (users), plafonné pour le plan Free ─────────
+    function hasRecruiterLimits() {
+      return exists(/databases/$(database)/documents/recruiterLimits/$(uid()));
+    }
+    function isProActiveUser() {
+      return hasRecruiterLimits() && recruiterLimits().plan == 'pro' && recruiterLimits().planStatus == 'active';
+    }
+    function freeCandidateLimit() {
+      return hasRecruiterLimits() ? recruiterLimits().freeApplicationsLimit : 0;
+    }
 
     // ── JOBS ─────────────────────────────────────────────────────────────────
     match /jobs/{jobId} {
@@ -22,48 +54,125 @@ service cloud.firestore {
     }
 
     // ── APPLICATIONS ─────────────────────────────────────────────────────────
+    // Candidatures via `users.userId`. Créées soit par le candidat lui-même
+    // (userId = son propre uid), soit par l'admin (saisie manuelle, sans userId
+    // lié à un compte). Les recruteurs ne touchent JAMAIS cette collection
+    // (ils passent par `needs`/`propositions`). Avant : n'importe quel
+    // utilisateur connecté pouvait lire/modifier/supprimer la candidature de
+    // n'importe qui.
     match /applications/{appId} {
-      allow read, create, update, delete: if isAuth();
+      allow read, update, delete: if isAuth() && (isAdminUser() || resource.data.userId == uid());
+      allow create: if isAuth() && (isAdminUser() || request.resource.data.userId == uid());
     }
 
     // ── NEEDS ────────────────────────────────────────────────────────────────
+    // Création limitée par le plan (Free/Pro) via le doc miroir recruiterLimits/{uid}.
+    // L'admin n'est jamais bloqué par la limite (correction manuelle toujours possible).
     match /needs/{needId} {
-      allow read, create, update, delete: if isAuth();
+      allow read: if isAuth();
+      allow create: if isAuth() && request.resource.data.userId == uid()
+                     && (isAdminUser() || (jobLimitOk() && requestLimitOk()));
+      allow update, delete: if isAuth() && (isAdminUser() || resource.data.userId == uid());
     }
 
     // ── RECRUITERS ───────────────────────────────────────────────────────────
+    // Un recruteur peut gérer son propre profil, mais ne peut PAS s'auto-activer
+    // le plan Pro : il peut seulement demander (planStatus = 'pending_confirmation').
+    // Seul l'admin peut passer planStatus à 'active' / fixer planExpiry.
     match /recruiters/{recruiterId} {
-      allow read, create, update, delete: if isAuth();
+      allow read: if isAuth();
+      allow create: if isAuth();
+      allow update: if isAuth() && (
+        isAdminUser()
+        ||
+        (
+          (resource.data.uid == uid() || resource.data.email == request.auth.token.email)
+          && request.resource.data.planExpiry     == resource.data.get('planExpiry', null)
+          && request.resource.data.planConfirmedAt == resource.data.get('planConfirmedAt', null)
+          && request.resource.data.planActivatedAt == resource.data.get('planActivatedAt', null)
+          && (
+               request.resource.data.get('planStatus', null) == resource.data.get('planStatus', null)
+               || request.resource.data.get('planStatus', null) == 'pending_confirmation'
+             )
+        )
+      );
+      allow delete: if isAdminUser();
     }
 
     // ── CANDIDATE PROFILES ───────────────────────────────────────────────────
+    // Doc keyé par l'uid du candidat (candidateProfiles/{uid}). Avant : n'importe
+    // quel utilisateur connecté pouvait lire/modifier/supprimer le profil de
+    // n'importe qui. Les recruteurs ne lisent jamais cette collection (ils
+    // passent par `users`, déjà sécurisé) — donc owner + admin uniquement.
     match /candidateProfiles/{profileId} {
-      allow read, create, update, delete: if isAuth();
+      allow read, create, update, delete: if isAuth() && (isAdminUser() || isOwner(profileId));
     }
 
     // ── USERS ────────────────────────────────────────────────────────────────
+    // Contient les profils candidats. Avant : n'importe quel utilisateur connecté
+    // pouvait lire/modifier/supprimer le compte de n'importe qui — trou majeur.
+    // Maintenant : chacun gère son propre compte ; les recruteurs Pro actifs ont
+    // un accès complet en lecture ; les recruteurs Free peuvent lister (pas
+    // "get" individuel) jusqu'à freeApplicationsLimit profils à la fois.
     match /users/{userId} {
-      allow read, create, update, delete: if isAuth();
+      allow get:    if isAuth() && (isAdminUser() || uid() == userId || isProActiveUser());
+      allow list:   if isAuth() && (isAdminUser() || isProActiveUser()
+                     || (hasRecruiterLimits() && request.query.limit <= freeCandidateLimit()));
+      allow create: if isAuth() && (isAdminUser() || uid() == userId);
+      allow update, delete: if isAuth() && (isAdminUser() || uid() == userId);
     }
 
     // ── ADMINS ───────────────────────────────────────────────────────────────
+    // Personne ne peut s'auto-nommer admin depuis le client. Ajout uniquement
+    // via la console Firebase ou le SDK Admin (Cloud Function / script serveur).
     match /admins/{adminId} {
-      allow read, write: if isAuth();
+      allow read: if isAuth();
+      allow write: if false;
+    }
+
+    // ── RECRUITER LIMITS (miroir, maintenu par Cloud Function) ────────────────
+    match /recruiterLimits/{uidDoc} {
+      allow read: if isAuth() && (uidDoc == uid() || isAdminUser());
+      allow write: if false; // écrit uniquement par les Cloud Functions (Admin SDK)
     }
 
     // ── MATCHES ──────────────────────────────────────────────────────────────
+    // Aucune référence trouvée dans le code actuel (Admin/Recruiter/Candidate/
+    // MatchingPanel) — collection probablement obsolète (le matching réel passe
+    // par `propositions` + `needs.candidatePipeline`). Verrouillée à l'admin
+    // par précaution ; à supprimer si confirmé inutilisée.
     match /matches/{matchId} {
-      allow read, create, update, delete: if isAuth();
+      allow read, write: if isAdminUser();
+    }
+
+    // Un doc `messages` suit l'un de ces 2 schémas selon qui l'a créé :
+    //  - recruteur/admin : { userId: <uid du recruteur>, sender: 'recruiter'|'admin' }
+    //  - candidat/admin   : { senderId: <uid>, participantIds: [uid, 'admin'] }
+    // .get(key, default) évite une erreur de règle si le champ est absent.
+    function isMessageParty(data) {
+      return (data.get('userId', null) == uid())
+          || (uid() in data.get('participantIds', []));
     }
 
     // ── MESSAGES ─────────────────────────────────────────────────────────────
+    // Avant : n'importe quel utilisateur connecté pouvait lire/modifier/
+    // supprimer TOUTES les conversations de TOUT LE MONDE. Maintenant :
+    // seuls les participants de la conversation (peu importe le schéma) + admin.
     match /messages/{msgId} {
-      allow read, create, update, delete: if isAuth();
+      allow read: if isAuth() && (isAdminUser() || isMessageParty(resource.data));
+      allow create: if isAuth() && (isAdminUser() || isMessageParty(request.resource.data));
+      allow update, delete: if isAdminUser();
     }
 
     // ── DIAGNOSTICS ──────────────────────────────────────────────────────────
+    // "Pitch leads" — soumis via un formulaire public (composant hors de ce
+    // périmètre). Avant : n'importe quel utilisateur connecté pouvait lire/
+    // modifier/supprimer TOUS les leads des autres. Maintenant : création
+    // toujours ouverte (ne casse pas le formulaire), mais lecture/modification/
+    // suppression réservées à l'admin (c'est un outil de suivi commercial interne).
     match /diagnostics/{diagId} {
-      allow read, create, update, delete: if isAuth();
+      allow create: if isAuth();
+      allow read, update, delete: if isAdminUser();
     }
 
     // ── NOTIFICATIONS ────────────────────────────────────────────────────────
@@ -74,58 +183,107 @@ service cloud.firestore {
       allow create: if isAuth();
     }
 
-    // ── SUBSCRIPTIONS ────────────────────────────────────────────────────────
+    // ── SUBSCRIPTIONS (legacy) ──────────────────────────────────────────────
+    // Aucune référence trouvée dans le code actuel — le système d'abonnement
+    // réel passe par `recruiters.plan/planStatus/planExpiry` + le miroir
+    // `recruiterLimits`. Verrouillée à l'admin par précaution.
     match /subscriptions/{subId} {
-      allow read, create, update, delete: if isAuth();
+      allow read, write: if isAdminUser();
+    }
+
+    // ── INVOICES (factures PDF) ─────────────────────────────────────────────
+    // Générées uniquement côté serveur (Cloud Functions, Admin SDK — qui
+    // contourne ces règles). Le client ne fait jamais d'écriture directe ici.
+    // Lecture : admin, ou le recruteur propriétaire (recruiterUid = son uid réel,
+    // résolu côté serveur — distinct de `recruiterId`, qui est l'ID du doc
+    // `recruiters`, pas l'uid Auth).
+    match /invoices/{invoiceId} {
+      allow read: if isAuth() && (isAdminUser() || resource.data.recruiterUid == uid());
+      allow write: if false;
+    }
+
+    // ── INVOICE COUNTERS (compteur séquentiel par année) ────────────────────
+    // Écrit uniquement par la Cloud Function (transaction Admin SDK).
+    match /invoiceCounters/{year} {
+      allow read: if isAdminUser();
+      allow write: if false;
     }
 
     // ── PAYMENTS ─────────────────────────────────────────────────────────────
+    // Historique de facturation : seul l'admin peut créer/modifier une entrée
+    // (confirmation manuelle après vérification du paiement). Le recruteur peut
+    // uniquement lire ses propres transactions.
+    // NOTE : corrigé pour utiliser `recruiterEmail` — le champ `recruiterUid`
+    // référencé avant n'était jamais écrit par le code (seul `recruiterId`,
+    // l'ID du doc `recruiters`, l'était), donc cette lecture était impossible
+    // en pratique pour tout recruteur avant ce correctif.
     match /payments/{paymentId} {
-      allow read, write: if isAuth();
+      allow read: if isAuth() && (isAdminUser() || resource.data.recruiterEmail == request.auth.token.email);
+      allow create, update, delete: if isAdminUser();
     }
 
     // ── PROPOSITIONS ─────────────────────────────────────────────────────────
+    // Pont entre matching et recruteur : créées par l'admin (matching manuel)
+    // OU par le recruteur lui-même (Pro, auto-matching via MatchingPanel), avec
+    // `recruiterId` = l'uid du recruteur concerné. Le candidat n'y accède jamais
+    // directement. Avant : n'importe quel utilisateur connecté pouvait lire/
+    // modifier/supprimer les propositions de n'importe quel autre recruteur.
     match /propositions/{propId} {
-      allow read, create, update, delete: if isAuth();
+      allow read, update: if isAuth() && (isAdminUser() || resource.data.recruiterId == uid());
+      allow create: if isAuth() && (isAdminUser() || request.resource.data.recruiterId == uid());
+      allow delete: if isAdminUser();
     }
 
     // ── CANDIDATES ───────────────────────────────────────────────────────────
+    // Jamais écrite par le code actuel (aucun addDoc/updateDoc/setDoc trouvé
+    // dans Admin/Recruiter/Candidate/MatchingPanel) — seulement lue par
+    // l'admin. Écriture réservée admin par précaution ; lecture laissée aux
+    // utilisateurs connectés au cas où une autre partie du code en dépend.
     match /candidates/{candidateId} {
-      allow read, write: if isAuth();
+      allow read: if isAuth();
+      allow write: if isAdminUser();
     }
 
     // ── CVS ──────────────────────────────────────────────────────────────────
+    // Aucune référence trouvée dans le code actuel (Admin/Recruiter/Candidate/
+    // MatchingPanel) — collection probablement obsolète. Verrouillée à l'admin
+    // par précaution ; à supprimer si confirmé inutilisée.
     match /cvs/{cvId} {
-      allow read, write: if isAuth();
+      allow read, write: if isAdminUser();
     }
 
     // ── SETTINGS (config générale) ────────────────────────────────────────────
     match /settings/{docId} {
       allow read: if true;
-      allow write: if isAuth();
+      allow write: if isAdminUser();
     }
 
-    // ── SETTINGS DYNAMIQUES — lecture publique, écriture authentifiée ─────────
-    match /settings_sectors/{docId}        { allow read: if true; allow write: if isAuth(); }
-    match /settings_contracts/{docId}      { allow read: if true; allow write: if isAuth(); }
-    match /settings_urgencies/{docId}      { allow read: if true; allow write: if isAuth(); }
-    match /settings_salaries/{docId}       { allow read: if true; allow write: if isAuth(); }
-    match /settings_roles/{docId}          { allow read: if true; allow write: if isAuth(); }
-    match /settings_locations/{docId}      { allow read: if true; allow write: if isAuth(); }
-    match /settings_education/{docId}      { allow read: if true; allow write: if isAuth(); }
-    match /settings_educations/{docId}     { allow read: if true; allow write: if isAuth(); }
-    match /settings_availabilities/{docId} { allow read: if true; allow write: if isAuth(); }
-    match /settings_nationalities/{docId}  { allow read: if true; allow write: if isAuth(); }
-    match /settings_languages/{docId}      { allow read: if true; allow write: if isAuth(); }
-    match /settings_pricing/{docId}        { allow read: if true; allow write: if isAuth(); }
-    match /settings_company/{docId}        { allow read: if true; allow write: if isAuth(); }
-    match /settings_matching/{docId}       { allow read: if true; allow write: if isAuth(); }
-    match /settings_experiences/{docId}    { allow read: if true; allow write: if isAuth(); }
-    match /settings_job_titles/{docId}     { allow read: if true; allow write: if isAuth(); }
+    // ── SETTINGS DYNAMIQUES — lecture publique, écriture réservée à l'admin ───
+    // (avant : n'importe quel utilisateur connecté pouvait modifier les listes
+    // de secteurs, villes, intitulés de poste, tarifs, etc.)
+    match /settings_sectors/{docId}        { allow read: if true; allow write: if isAdminUser(); }
+    match /settings_contracts/{docId}      { allow read: if true; allow write: if isAdminUser(); }
+    match /settings_urgencies/{docId}      { allow read: if true; allow write: if isAdminUser(); }
+    match /settings_salaries/{docId}       { allow read: if true; allow write: if isAdminUser(); }
+    match /settings_roles/{docId}          { allow read: if true; allow write: if isAdminUser(); }
+    match /settings_locations/{docId}      { allow read: if true; allow write: if isAdminUser(); }
+    match /settings_education/{docId}      { allow read: if true; allow write: if isAdminUser(); }
+    match /settings_educations/{docId}     { allow read: if true; allow write: if isAdminUser(); }
+    match /settings_availabilities/{docId} { allow read: if true; allow write: if isAdminUser(); }
+    match /settings_nationalities/{docId}  { allow read: if true; allow write: if isAdminUser(); }
+    match /settings_languages/{docId}      { allow read: if true; allow write: if isAdminUser(); }
+    match /settings_pricing/{docId}        { allow read: if true; allow write: if isAdminUser(); }
+    match /settings_company/{docId}        { allow read: if true; allow write: if isAdminUser(); }
+    match /settings_matching/{docId}       { allow read: if true; allow write: if isAdminUser(); }
+    match /settings_experiences/{docId}    { allow read: if true; allow write: if isAdminUser(); }
+    match /settings_job_titles/{docId}     { allow read: if true; allow write: if isAdminUser(); }
 
-    // ── FALLBACK — toute collection non listée accessible si connecté ─────────
+    // ── FALLBACK — toute collection non listée : lecture pour les connectés,
+    // écriture réservée à l'admin (évite qu'une nouvelle collection oubliée
+    // ici se retrouve grande ouverte à l'écriture par erreur).
     match /{collection}/{docId} {
-      allow read, write: if isAuth();
+      allow read: if isAuth();
+      allow write: if isAdminUser();
     }
 
   }

@@ -22,6 +22,9 @@ export interface CompanyInfo {
   website: string;        // "https://vediorgm.web.app"
   copyright: string;      // "© 2026 VEDIOR GM"
   foundedYear: string;    // "2024"
+  // Mentions légales (utilisées sur les factures)
+  rccm: string;           // Registre du Commerce (RCCM)
+  nif: string;            // Numéro d'Identification Fiscale
   // Réseaux sociaux
   linkedinUrl: string;
   facebookUrl: string;
@@ -41,6 +44,8 @@ export const DEFAULT_COMPANY: CompanyInfo = {
   website: 'https://vediorgm.web.app',
   copyright: '© 2026 VEDIOR GM',
   foundedYear: '2024',
+  rccm: '',
+  nif: '',
   linkedinUrl: '',
   facebookUrl: '',
   twitterUrl: '',

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { db } from "../lib/firebase";
-import { collection, query, where, getDocs, getDoc, updateDoc, doc } from "firebase/firestore";
+import { collection, query, where, getDocs, getDoc, updateDoc, doc, orderBy, onSnapshot } from "firebase/firestore";
 import { getAuth } from "firebase/auth";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import { motion, AnimatePresence } from "framer-motion";
 
 const T = {
@@ -143,6 +144,7 @@ const DEFAULT_PRICING = {
   freeJobsLimit: 1,
   freeApplicationsLimit: 5,
   freeRequestsLimit: 1,
+  proJobsLimit: -1, // -1 = illimité, configurable par l'admin
   cacNumber: "+253 77 XX XX XX",
   cacEnabled: true,
   bankName: "Banque Centrale de Djibouti (BCD)",
@@ -161,6 +163,105 @@ const DEFAULT_PRICING = {
 };
 const fmtCard=v=>v.replace(/\D/g,"").slice(0,16).replace(/(.{4})/g,"$1 ").trim();
 const fmtExp=v=>{const d=v.replace(/\D/g,"").slice(0,4);return d.length>=3?d.slice(0,2)+"/"+d.slice(2):d;};
+
+// ─────────────────────────────────────────────
+// Historique de facturation du recruteur connecté — lecture via
+// `recruiterEmail` (correspond à la règle Firestore payments), téléchargement
+// via la Cloud Function `downloadInvoice` (génère si besoin, europe-west1).
+// ─────────────────────────────────────────────
+function MyInvoices({ lang }) {
+  const [payments, setPayments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState(null);
+  const [errorId, setErrorId] = useState(null);
+
+  useEffect(() => {
+    const auth = getAuth();
+    const user = auth.currentUser;
+    if (!user?.email) { setLoading(false); return; }
+    const q = query(
+      collection(db, 'payments'),
+      where('recruiterEmail', '==', user.email),
+      orderBy('createdAt', 'desc')
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setPayments(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setLoading(false);
+    }, () => setLoading(false));
+    return unsub;
+  }, []);
+
+  const downloadInvoice = async (paymentId) => {
+    setBusyId(paymentId);
+    setErrorId(null);
+    try {
+      const fns = getFunctions(db.app, 'europe-west1');
+      const call = httpsCallable(fns, 'downloadInvoice');
+      const res = await call({ paymentId });
+      const { pdfBase64, filename } = res.data;
+      const byteChars = atob(pdfBase64);
+      const bytes = new Uint8Array(byteChars.length);
+      for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+      const blob = new Blob([bytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename || 'facture.pdf';
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('downloadInvoice failed:', e);
+      setErrorId(paymentId);
+      setTimeout(() => setErrorId(null), 3000);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const confirmed = payments.filter(p => p.status === 'confirmed');
+  if (loading || confirmed.length === 0) return null;
+
+  return (
+    <div style={{maxWidth:900,margin:"0 auto 40px",background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:18,overflow:"hidden"}}>
+      <div style={{padding:"20px 28px",borderBottom:"1px solid rgba(255,255,255,0.06)"}}>
+        <p style={{margin:0,fontSize:14,fontWeight:900,color:"#fff"}}>
+          {lang === "FR" ? "📄 Mes factures" : "📄 My invoices"}
+        </p>
+      </div>
+      <div>
+        {confirmed.map(p => (
+          <div key={p.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 28px",borderBottom:"1px solid rgba(255,255,255,0.03)"}}>
+            <div>
+              <p style={{margin:0,fontSize:13,color:"#fff",fontWeight:700}}>
+                {p.billing === 'yearly' ? (lang==='FR'?'Abonnement annuel':'Yearly plan') : p.billing === 'quarterly' ? (lang==='FR'?'Abonnement trimestriel':'Quarterly plan') : (lang==='FR'?'Abonnement mensuel':'Monthly plan')}
+              </p>
+              <p style={{margin:0,fontSize:11,color:"rgba(255,255,255,0.4)"}}>
+                {p.createdAt?.toDate?.()?.toLocaleDateString('fr-FR') || '—'} · {Number(p.amount || 0).toLocaleString('fr-FR')} FDJ
+              </p>
+            </div>
+            <button
+              onClick={() => downloadInvoice(p.id)}
+              disabled={busyId === p.id}
+              style={{
+                padding:"8px 16px", borderRadius:10, border:"none",
+                background: errorId === p.id ? "rgba(239,68,68,0.15)" : "rgba(59,130,246,0.15)",
+                color: errorId === p.id ? "#f87171" : "#60a5fa",
+                fontSize:11, fontWeight:900, textTransform:"uppercase", letterSpacing:"0.5px",
+                cursor: busyId === p.id ? "wait" : "pointer", opacity: busyId === p.id ? 0.6 : 1,
+              }}>
+              {busyId === p.id
+                ? (lang==='FR'?'Génération...':'Generating...')
+                : errorId === p.id
+                ? (lang==='FR'?'Erreur':'Error')
+                : (lang==='FR'?'⬇ Télécharger':'⬇ Download')
+              }
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 
 export default function RecruiterPricing({ lang: langProp = "FR" }){
   const [lang,setLang]=useState(langProp);
@@ -251,6 +352,36 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
     {t:"Verified Recruiter Badge ✓",ok:false},
     {t:"Unlimited offers",ok:false},
   ];
+  const proJobsLabel = pricing.proJobsLimit === -1
+    ? (lang==='FR' ? 'Offres illimitées' : 'Unlimited offers')
+    : (lang==='FR' ? `${pricing.proJobsLimit} offres actives max` : `${pricing.proJobsLimit} active offers max`);
+  const proF = (lang === 'FR' ? [
+    {t:proJobsLabel,s:true},{t:"Candidatures illimitées visibles",s:false},
+    {t:"🤖 Matching IA (score 0–100)",s:true},{t:"Accès profils complets candidats",s:true},
+    {t:"Contact direct & messagerie",s:false},{t:"Statistiques & rapports avancés",s:false},
+    {t:"Export Excel / PDF",s:false},{t:"Badge Recruteur Vérifié ✓",s:true},
+    {t:"Demandes recrutement illimitées",s:false},{t:"Multi-utilisateurs (3 comptes)",s:false},
+    {t:"Support prioritaire (2h)",s:false},{t:"Historique des recrutements",s:false},
+  ] : [
+    {t:proJobsLabel,s:true},{t:"Unlimited visible applications",s:false},
+    {t:"🤖 AI Matching (score 0–100)",s:true},{t:"Full candidate profiles access",s:true},
+    {t:"Direct contact & messaging",s:false},{t:"Advanced statistics & reports",s:false},
+    {t:"Excel / PDF export",s:false},{t:"Verified Recruiter Badge ✓",s:true},
+    {t:"Unlimited recruitment requests",s:false},{t:"Multi-user (3 accounts)",s:false},
+    {t:"Priority support (2h)",s:false},{t:"Recruitment history",s:false},
+  ]);
+  const rows = [
+    [lang==='FR'?"Offres actives":"Active offers", String(pricing.freeJobsLimit), pricing.proJobsLimit===-1?(lang==='FR'?'Illimité':'Unlimited'):String(pricing.proJobsLimit)],
+    [lang==='FR'?"Candidatures / offre":"Applications / offer", String(pricing.freeApplicationsLimit), lang==='FR'?'Illimité':'Unlimited'],
+    [lang==='FR'?"Matching IA":"AI Matching","—","✓"],
+    [lang==='FR'?"Profils complets":"Full profiles","—","✓"],
+    [lang==='FR'?"Contact direct":"Direct contact","—","✓"],
+    [lang==='FR'?"Demandes recrutement":"Recruitment requests", `${pricing.freeRequestsLimit}/${lang==='FR'?'mois':'month'}`, lang==='FR'?'Illimité':'Unlimited'],
+    [lang==='FR'?"Export données":"Data export","—","✓"],
+    [lang==='FR'?"Multi-comptes":"Multi-accounts","1","3"],
+    [lang==='FR'?"Badge Vérifié":"Verified Badge","—","✓"],
+    [lang==='FR'?"Support":"Support", lang==='FR'?"Email 48h":"Email 48h", lang==='FR'?"Prioritaire 2h":"Priority 2h"],
+  ];
   const plan=PLANS.find(p=>p.id===billing);
   const price=plan.price.toLocaleString("fr-FR");
   const cp=(text,key)=>{navigator.clipboard.writeText(text);setCopied(key);setTimeout(()=>setCopied(""),2000);};
@@ -333,7 +464,7 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
             <p style={{color:"rgba(255,255,255,0.4)",fontSize:13,margin:"4px 0 24px"}}>{t.proSub}</p>
             <div style={{height:1,background:"rgba(59,130,246,0.15)",marginBottom:24}}/>
             <div style={{display:"flex",flexDirection:"column",gap:11,marginBottom:32}}>
-              {t.proF.map((f,i)=>(
+              {proF.map((f,i)=>(
                 <div key={i} style={{display:"flex",alignItems:"center",gap:10}}>
                   <div style={{width:20,height:20,borderRadius:6,background:f.s?"rgba(59,130,246,0.2)":"rgba(34,197,94,0.15)",border:`1px solid ${f.s?"rgba(59,130,246,0.4)":"rgba(34,197,94,0.3)"}`,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontSize:11,color:f.s?"#60a5fa":"#4ade80"}}>✓</div>
                   <span style={{fontSize:13,color:f.s?"#fff":"rgba(255,255,255,0.75)",fontWeight:f.s?700:400}}>{f.t}</span>
@@ -364,7 +495,7 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
               </tr>
             </thead>
             <tbody>
-              {t.rows.map(([f,fr,pr],i)=>(
+              {rows.map(([f,fr,pr],i)=>(
                 <tr key={i} style={{borderTop:"1px solid rgba(255,255,255,0.04)",background:i%2===0?"transparent":"rgba(255,255,255,0.01)"}}>
                   <td style={{padding:"12px 28px",fontSize:13,color:"rgba(255,255,255,0.6)"}}>{f}</td>
                   <td style={{padding:"12px 20px",textAlign:"center",fontSize:13,color:fr==="—"?"rgba(255,255,255,0.2)":"rgba(255,255,255,0.5)"}}>{fr}</td>
@@ -375,6 +506,8 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
           </table>
         </motion.div>
       </div>
+
+      <MyInvoices lang={lang} />
 
       {/* PAYMENT MODAL */}
       <AnimatePresence>

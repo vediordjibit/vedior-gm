@@ -19,8 +19,10 @@ import {
   Clock, Edit2, Save, X, ChevronDown, ChevronUp, AlertCircle,
   RefreshCw, Wallet, Building2, Smartphone, Plus, Trash2,
   ToggleLeft, ToggleRight, Calendar, DollarSign, TrendingUp,
-  Eye, EyeOff, Copy, Check, Info, Mail, Zap, CalendarCheck
+  Eye, EyeOff, Copy, Check, Info, Mail, Zap, CalendarCheck,
+  Download, FileText
 } from 'lucide-react';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import {
   doc, getDoc, setDoc, updateDoc, collection, onSnapshot,
   query, orderBy, serverTimestamp, addDoc, Timestamp
@@ -39,6 +41,7 @@ interface PricingConfig {
   freeJobsLimit: number;
   freeApplicationsLimit: number;
   freeRequestsLimit: number;
+  proJobsLimit: number; // -1 = illimité
   // CAC Pay
   cacNumber: string;
   cacEnabled: boolean;
@@ -64,6 +67,8 @@ interface PricingConfig {
 
 interface Recruiter {
   id: string;
+  userId?: string; // uid Auth réel — TOUJOURS présent (auto-inscription ET création admin), contrairement à `uid`
+  uid?: string;    // présent uniquement pour les recruteurs auto-inscrits — ne pas utiliser seul
   contactName?: string;
   companyName?: string;
   email?: string;
@@ -96,6 +101,7 @@ const DEFAULT_CONFIG: PricingConfig = {
   freeJobsLimit: 1,
   freeApplicationsLimit: 5,
   freeRequestsLimit: 1,
+  proJobsLimit: -1,
   cacNumber: '+253 77 XX XX XX',
   cacEnabled: true,
   bankName: 'Banque Centrale de Djibouti (BCD)',
@@ -276,6 +282,27 @@ function TarifsEditor({ config, onSave }: { config: PricingConfig; onSave: (c: P
             </div>
           </div>
 
+          {/* ── Limites Pro ── */}
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-4">⚡ Limites Plan Pro</p>
+            <div className="flex items-center justify-between py-3 border-b border-gray-100">
+              <span className="text-sm font-black text-gray-700">Offres illimitées</span>
+              <button
+                onClick={() => upd('proJobsLimit', draft.proJobsLimit === -1 ? 20 : -1)}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase transition-all ${draft.proJobsLimit === -1 ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-400'}`}>
+                {draft.proJobsLimit === -1 ? <><ToggleRight size={16} /> Illimité</> : <><ToggleLeft size={16} /> Limité</>}
+              </button>
+            </div>
+            {draft.proJobsLimit !== -1 && (
+              <div className="grid grid-cols-3 gap-4 mt-4">
+                {field('Offres actives max (Pro)', 'proJobsLimit')}
+              </div>
+            )}
+            <p className="text-[11px] text-gray-400 font-medium mt-3 flex items-center gap-1.5">
+              <Info size={12} /> Désactivez "Illimité" pour fixer un plafond même pour les recruteurs Pro (ex: anti-abus).
+            </p>
+          </div>
+
           {/* ── Moyens de paiement ── */}
           <div>
             <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-4">💳 Moyens de Paiement</p>
@@ -348,6 +375,147 @@ function TarifsEditor({ config, onSave }: { config: PricingConfig; onSave: (c: P
               {saving ? 'Sauvegarde...' : saved ? 'Sauvegardé ✓' : 'Enregistrer la configuration'}
             </button>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// Téléchargement de facture — appelle la Cloud Function `downloadInvoice`
+// (génère si besoin, région europe-west1) et déclenche le téléchargement
+// navigateur à partir du PDF renvoyé en base64.
+// ─────────────────────────────────────────────
+async function downloadInvoicePdf(db: any, paymentId: string) {
+  const fns = getFunctions(db.app, 'europe-west1');
+  const call = httpsCallable(fns, 'downloadInvoice');
+  const res: any = await call({ paymentId });
+  const { pdfBase64, filename } = res.data;
+
+  const byteChars = atob(pdfBase64);
+  const bytes = new Uint8Array(byteChars.length);
+  for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename || 'facture.pdf';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function InvoiceButton({ db, paymentId }: { db: any; paymentId: string }) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+
+  const handleClick = async () => {
+    setLoading(true);
+    setError(false);
+    try {
+      await downloadInvoicePdf(db, paymentId);
+    } catch (e) {
+      console.error('downloadInvoice failed:', e);
+      setError(true);
+      setTimeout(() => setError(false), 3000);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={loading}
+      className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-wide transition-all disabled:opacity-50 ${
+        error ? 'bg-red-50 text-red-600' : 'bg-gray-100 text-gray-700 hover:bg-navy hover:text-white'
+      }`}
+    >
+      {loading
+        ? <RefreshCw size={12} className="animate-spin" />
+        : error
+        ? <><AlertCircle size={12} /> Erreur</>
+        : <><Download size={12} /> Facture</>
+      }
+    </button>
+  );
+}
+
+// ─────────────────────────────────────────────
+// Historique des paiements — toutes les transactions (confirmées, en
+// attente, refusées), avec téléchargement de facture pour les confirmées.
+// ─────────────────────────────────────────────
+function PaymentHistoryList({ db }: { db: any }) {
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const q = query(collection(db, 'payments'), orderBy('createdAt', 'desc'));
+    const unsub = onSnapshot(q, (snap) => {
+      setPayments(snap.docs.map(d => ({ id: d.id, ...d.data() } as Payment)));
+      setLoading(false);
+    }, () => setLoading(false));
+    return unsub;
+  }, [db]);
+
+  const statusPill: Record<string, string> = {
+    confirmed: 'bg-green-50 text-green-700 border-green-200',
+    pending:   'bg-amber-50 text-amber-700 border-amber-200',
+    rejected:  'bg-red-50 text-red-500 border-red-200',
+  };
+  const statusLabel: Record<string, string> = {
+    confirmed: 'Confirmé', pending: 'En attente', rejected: 'Refusé',
+  };
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-8 py-6 hover:bg-gray-50 transition-all text-left">
+        <div className="flex items-center gap-4">
+          <div className="w-11 h-11 rounded-2xl bg-navy/5 flex items-center justify-center">
+            <FileText size={20} className="text-navy" />
+          </div>
+          <div>
+            <p className="font-black text-gray-900">Historique des paiements & factures</p>
+            <p className="text-[11px] text-gray-400 font-medium mt-0.5">
+              {payments.length} transaction(s) — factures téléchargeables (générées à la demande)
+            </p>
+          </div>
+        </div>
+        {open ? <ChevronUp size={18} className="text-gray-400" /> : <ChevronDown size={18} className="text-gray-400" />}
+      </button>
+
+      {open && (
+        <div className="border-t border-gray-100">
+          {loading ? (
+            <div className="flex items-center justify-center py-16 text-gray-400">
+              <RefreshCw size={20} className="animate-spin mr-3" /> Chargement...
+            </div>
+          ) : payments.length === 0 ? (
+            <p className="text-center text-gray-400 text-sm py-16">Aucun paiement pour l'instant</p>
+          ) : (
+            <div className="divide-y divide-gray-50 max-h-[480px] overflow-y-auto">
+              {payments.map(p => (
+                <div key={p.id} className="flex items-center justify-between px-8 py-4 hover:bg-gray-50/50 transition-all">
+                  <div className="min-w-0">
+                    <p className="font-black text-gray-900 text-sm truncate">{p.recruiterName || p.recruiterEmail || 'Recruteur'}</p>
+                    <p className="text-[11px] text-gray-400">
+                      {planBillingLabel[p.billing] || p.billing} · {p.createdAt?.toDate?.()?.toLocaleDateString('fr-FR') || '—'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-4 shrink-0">
+                    <span className="font-black text-gray-900 text-sm">{Number(p.amount || 0).toLocaleString('fr-FR')} FDJ</span>
+                    <Pill label={statusLabel[p.status] || p.status} color={statusPill[p.status] || 'bg-gray-100 text-gray-500 border-gray-200'} />
+                    {p.status === 'confirmed' && <InvoiceButton db={db} paymentId={p.id} />}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -840,7 +1008,7 @@ export default function AdminPricingTab({ recruiters, db }: { recruiters: any[];
     // 2️⃣ Créer entrée dans payments (historique)
     try {
       await addDoc(collection(db, 'payments'), {
-        recruiterId:    rec.id,
+        recruiterId:    rec.id, // ID du doc recruiters (résolu vers l'uid Auth côté Cloud Function via resolveUid)
         recruiterEmail: rec.email,
         recruiterName:  rec.companyName || rec.contactName,
         amount:         price,
@@ -945,6 +1113,9 @@ export default function AdminPricingTab({ recruiters, db }: { recruiters: any[];
         config={config}
       />
 
+      {/* Historique complet des paiements + téléchargement des factures */}
+      <PaymentHistoryList db={db} />
+
       {/* Config tarifs + moyens de paiement */}
       <TarifsEditor config={config} onSave={saveConfig} />
 
@@ -973,7 +1144,7 @@ export default function AdminPricingTab({ recruiters, db }: { recruiters: any[];
           });
           try {
             await addDoc(collection(db, 'payments'), {
-              recruiterId: rec.id,
+              recruiterId: rec.id, // ID du doc recruiters (résolu vers l'uid Auth côté Cloud Function via resolveUid)
               recruiterEmail: rec.email,
               recruiterName: rec.companyName || rec.contactName,
               amount: priceMap[billing] || config.monthlyPrice,

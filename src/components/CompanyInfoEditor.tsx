@@ -111,6 +111,14 @@ export default function CompanyInfoEditor({ db }: { db: any }) {
               </div>
               <Field label="Année de fondation" fieldKey="foundedYear" placeholder="2024" value={data.foundedYear} onUpdate={upd} />
               <Field label="Site web" fieldKey="website" icon={Globe} placeholder="https://vediorgm.web.app" value={data.website} onUpdate={upd} />
+              <Field label="RCCM (Registre du Commerce)" fieldKey="rccm" icon={Hash} placeholder="DJ-DJI-01-2024-B-XXX" value={data.rccm} onUpdate={upd} />
+              <Field label="NIF (Numéro d'Identification Fiscale)" fieldKey="nif" icon={Hash} placeholder="XXXXXXXXX" value={data.nif} onUpdate={upd} />
+            </div>
+            <div className="mt-3 p-3 bg-blue-50 border border-blue-100 rounded-xl">
+              <p className="text-[11px] text-blue-700 font-medium flex items-start gap-2">
+                <Hash size={13} className="mt-0.5 shrink-0" />
+                RCCM et NIF apparaissent sur les factures PDF générées pour les recruteurs Pro — à renseigner avant la première facturation.
+              </p>
             </div>
           </section>
 
