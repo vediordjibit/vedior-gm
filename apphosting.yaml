@@ -11,15 +11,12 @@ env:
     value: production
 
   - variable: GROQ_API_KEY
-    availability:
-      - BUILD
-      - RUNTIME
+    secret: GROQ_API_KEY
 
   - variable: RESEND_API_KEY
-    availability:
-      - BUILD
-      - RUNTIME
+    secret: RESEND_API_KEY
 
   - variable: ADMIN_SDK_KEY
+    secret: FIREBASE_SERVICE_ACCOUNT
     availability:
       - RUNTIME
