@@ -1852,24 +1852,7 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
   };
 
   // ── Génère un ID VGM unique : VGM-YYYY-XXXX
-  const generateTempId = async (): Promise<string> => {
-    const year = new Date().getFullYear();
-    const prefix = `VGM-${year}-`;
-    const [usersSnap, candidatesSnap, recruitersSnap] = await Promise.all([
-      getDocs(collection(db, 'users')),
-      getDocs(collection(db, 'candidates')),
-      getDocs(collection(db, 'recruiters')),
-    ]);
-    const allIds = [
-      ...usersSnap.docs.flatMap(d => [d.data().tempId, d.data().vgmId]),
-      ...candidatesSnap.docs.map(d => d.data().vgmId),
-      ...recruitersSnap.docs.map(d => d.data().vgmId),
-    ]
-      .filter((id): id is string => !!id && id.startsWith(prefix))
-      .map(id => parseInt(id.replace(prefix, '')) || 0);
-    const nextNum = allIds.length > 0 ? Math.max(...allIds) + 1 : 1;
-    return `${prefix}${String(nextNum).padStart(4, '0')}`;
-  };
+  // VGM ID supprimé — plus utilisé
 
   // ── Génère un mot de passe mémorisable
   const generatePassword = (): string => {
@@ -1912,8 +1895,8 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
       // Déconnecter immédiatement l'instance secondaire — l'admin n'est pas affecté
       await signOut(secondaryAuth);
 
-      // ── 2. Générer l'ID VGM (recruteurs & candidats uniquement)
-      const tempId = newUser.role !== 'admin' ? await generateTempId() : '';
+      // VGM ID supprimé
+      const tempId = '';
 
       // ── 2bis. Envoyer l'email de bienvenue via notre route Resend (template perso).
       // Pour recruiter/candidate : passe par /api/send-welcome (noreply@vediorgm.com + reply-to Gmail).
@@ -1973,7 +1956,7 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
         createdByAdmin: true,
         status: 'active',
         createdAt: serverTimestamp(),
-        tempId: tempId || null,
+        // tempId supprimé
         // tempPassword NON stocké en clair — l'utilisateur définit son mot de passe via l'email envoyé
         gmailConfirmed: false,
       };
@@ -2073,7 +2056,7 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
 
       // ── 5. Afficher les identifiants à l'admin ──────────────────
       setGeneratedCredentials({
-        tempId,
+        tempId: '',
         tempPassword,
         email: newUser.email,
         role: newUser.role,
@@ -4229,7 +4212,7 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
                                 <div>
                                   <p className="text-base font-black text-gray-900 leading-tight">{u.displayName || u.fullName || u.contactName || u.companyName || '—'}</p>
                                   <p className={`text-[10px] font-bold uppercase tracking-normal ${u.status === 'active' || !u.status ? 'text-green-600' : 'text-red-500'}`}>
-                                    {u.loginMethod === 'google' ? '🔵 Google' : u.loginMethod === 'email' ? '📧 Email' : u.tempId ? `🪪 ${u.tempId}` : ''}
+                                    {u.loginMethod === 'google' ? '🔵 Google' : u.loginMethod === 'email' ? '📧 Email' : '📧 Email'}
                                     {' '}{u.status === 'disabled' ? '○ Désactivé' : '● Actif'}
                                   </p>
                                 </div>
@@ -6427,7 +6410,7 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
                       <p className="text-xs text-green-600 font-bold mt-0.5">
                         {generatedCredentials.role === 'recruiter'
                           ? `${t.admin.resetLinkSent} ${generatedCredentials.email}`
-                          : `${t.admin.vgmIdSent} ${generatedCredentials.email}`}
+                          : `Un lien de réinitialisation a été envoyé à ${generatedCredentials.email}`}
                       </p>
                     </div>
                   </div>
@@ -6467,20 +6450,7 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
                   <p className="font-black text-gray-900 text-base">{generatedCredentials.email}</p>
                 </div>
 
-                {/* ID VGM — recruteurs & candidats uniquement */}
-                {generatedCredentials.role !== 'admin' && generatedCredentials.tempId && (
-                  <div className="bg-gray-100 border-2 border-gray-200 rounded-2xl p-4">
-                    <p className="text-[10px] font-black uppercase text-gray-900 tracking-normal mb-1 flex items-center gap-2">
-                      <KeyRound size={11} /> {t.admin.vgmIdentifier}
-                    </p>
-                    <p className="font-black text-gray-900 text-2xl font-mono tracking-[0.15em]">
-                      {generatedCredentials.tempId}
-                    </p>
-                    <p className="text-[10px] text-gray-400 font-bold mt-1">
-                      {t.admin.vgmIdDesc}
-                    </p>
-                  </div>
-                )}
+
 
                 {/* Mot de passe */}
                 <div className="bg-gray-900 rounded-2xl p-4">
@@ -6500,14 +6470,19 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
                 {/* Bouton copier */}
                 <button
                   onClick={() => {
-                    const text = generatedCredentials.role !== 'admin'
-                      ? `${t.admin.accessVedior}
-Email : ${generatedCredentials.email}
-${t.admin.vgmIdentifier} : ${generatedCredentials.tempId}
+                    const text = generatedCredentials.role === 'candidate'
+                      ? `Accès Vedior GM — Espace Candidat
+Téléphone : ${generatedCredentials.phone || ''}
 Mot de passe : ${generatedCredentials.tempPassword}
 
-${t.admin.connectOn}`
-                      : `${t.admin.accessVediorAdmin}
+Connectez-vous sur : https://vediorgm.com`
+                      : generatedCredentials.role === 'recruiter'
+                      ? `Accès Vedior GM — Espace Recruteur
+Email : ${generatedCredentials.email}
+Mot de passe : ${generatedCredentials.tempPassword}
+
+Connectez-vous sur : https://vediorgm.com`
+                      : `Accès Vedior GM — Espace Admin
 Email : ${generatedCredentials.email}
 Mot de passe : ${generatedCredentials.tempPassword}`;
                     navigator.clipboard.writeText(text);
@@ -6563,7 +6538,7 @@ Mot de passe : ${generatedCredentials.tempPassword}`;
                   <div>
                     <p className="text-[10px] font-black uppercase tracking-[0.3em] text-orange/70 mb-1">
                       {selectedUser.role === 'candidate' ? 'Candidat' : selectedUser.role === 'recruiter' ? 'Recruteur' : 'Administrateur'}
-                      {selectedUser.tempId && ` · ${selectedUser.tempId}`}
+
                     </p>
                     <h3 className="text-2xl font-black text-white">
                       {selectedUser.fullName || selectedUser.displayName || selectedUser.companyName || '—'}
