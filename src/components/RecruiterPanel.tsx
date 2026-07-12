@@ -2177,7 +2177,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
                       <div className="sm:col-span-2">
                         <label className="text-[9px] font-black uppercase tracking-widest text-gray-400 ml-1 mb-1.5 block transition-colors group-focus-within:text-orange">
-                          Intitulé du poste
+                          {lang === 'EN' ? 'Job Title' : lang === 'AR' ? 'المسمى الوظيفي' : 'Intitulé du poste'}
                         </label>
                         <div className="relative">
                           <input
@@ -2186,13 +2186,13 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                             onChange={e => { setNewNeed({...newNeed, jobTitle: e.target.value}); setShowJobSuggestions(true); }}
                             onFocus={() => setShowJobSuggestions(true)}
                             onBlur={() => setTimeout(() => setShowJobSuggestions(false), 150)}
-                            placeholder="Ex: Chef de chantier senior"
+                            {...{placeholder: lang === 'EN' ? 'Ex: Senior Site Manager' : lang === 'AR' ? 'مثال: مدير موقع' : 'Ex: Chef de chantier senior'}}
                             className="w-full bg-white px-5 py-4 rounded-2xl border-2 border-gray-100 outline-none focus:border-orange font-bold text-navy text-lg placeholder:text-gray-300 transition-all shadow-sm"
                           />
                           {showJobSuggestions && (
                             <div className="absolute top-full left-0 right-0 mt-2 bg-white border-2 border-gray-100 rounded-2xl shadow-xl z-10 overflow-hidden">
                               <p className="text-[9px] font-black uppercase tracking-widest text-gray-300 px-4 pt-3 pb-1">
-                                Postes fréquents · {newNeed.sector}
+                                {lang === 'EN' ? `Common positions · ${newNeed.sector}` : lang === 'AR' ? `مناصب شائعة · ${newNeed.sector}` : `Postes fréquents · ${newNeed.sector}`}
                               </p>
                               {(JOBS_BY_SECTOR[newNeed.sector] || []).filter(j =>
                                 !newNeed.jobTitle || j.toLowerCase().includes(newNeed.jobTitle.toLowerCase())
@@ -2209,8 +2209,8 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                       </div>
                       <div className="group">
                         <label className="text-[9px] font-black uppercase tracking-widest text-gray-400 ml-1 mb-1.5 block transition-colors group-focus-within:text-orange flex items-center gap-2">
-                          Secteur
-                          <span className="normal-case font-bold text-orange/60 tracking-normal">· pré-rempli, modifiable</span>
+                          {lang === 'EN' ? 'Sector' : lang === 'AR' ? 'القطاع' : 'Secteur'}
+                          <span className="normal-case font-bold text-orange/60 tracking-normal">{lang === 'EN' ? '· pre-filled, editable' : lang === 'AR' ? '· مُعبأ مسبقاً' : '· pré-rempli, modifiable'}</span>
                         </label>
                         <select
                           value={newNeed.sector}
@@ -2244,7 +2244,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
                       <div className="group">
                         <label className="text-[9px] font-black uppercase tracking-widest text-gray-400 ml-1 mb-1.5 block transition-colors group-focus-within:text-orange">
-                          Nb de profils
+                          {lang === 'EN' ? 'Number of profiles' : lang === 'AR' ? 'عدد الملفات' : 'Nb de profils'}
                         </label>
                         <div className="flex items-center gap-2 bg-white border-2 border-gray-100 rounded-2xl px-4 py-3 shadow-sm">
                           <button type="button"
@@ -2258,7 +2258,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                       </div>
                       <div className="group">
                         <label className="text-[9px] font-black uppercase tracking-widest text-gray-400 ml-1 mb-1.5 block transition-colors group-focus-within:text-orange">
-                          Expérience (ans)
+                          {lang === 'EN' ? 'Experience (yrs)' : lang === 'AR' ? 'الخبرة (سنوات)' : 'Expérience (ans)'}
                         </label>
                         <div className="flex items-center gap-2 bg-white border-2 border-gray-100 rounded-2xl px-4 py-3 shadow-sm">
                           <button type="button"
@@ -2272,7 +2272,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                       </div>
                       <div>
                         <label className="text-[9px] font-black uppercase tracking-widest text-gray-400 ml-1 mb-1.5 block">
-                          Urgence
+                          {lang === 'EN' ? 'Urgency' : lang === 'AR' ? 'الأولوية' : 'Urgence'}
                         </label>
                         <div className="flex gap-2">
                           {(dynUrgencies.length > 0
@@ -2305,7 +2305,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                         <FileText size={14} className="text-orange" />
                       </div>
                       <p className="text-[11px] font-black uppercase tracking-[0.25em] text-navy/40">
-                        Compétences & description
+                        {lang === 'EN' ? 'Skills & Description' : lang === 'AR' ? 'المهارات والوصف' : 'Compétences & description'}
                       </p>
                       <div className="flex-1 h-px bg-gray-100" />
                     </div>
@@ -2313,13 +2313,13 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                     {/* Délai — date picker + raccourcis */}
                     <div className="group">
                       <label className="text-[9px] font-black uppercase tracking-widest text-gray-400 ml-1 mb-1.5 block transition-colors group-focus-within:text-orange">
-                        Délai souhaité
+                        {lang === 'EN' ? 'Desired deadline' : lang === 'AR' ? 'الموعد المطلوب' : 'Délai souhaité'}
                       </label>
                       <div className="flex gap-3 flex-wrap">
                         {[
-                          { label: '1 sem.', days: 7 },
-                          { label: '1 mois', days: 30 },
-                          { label: '3 mois', days: 90 },
+                          { label: lang === 'EN' ? '1 week' : lang === 'AR' ? 'أسبوع' : '1 sem.', days: 7 },
+                          { label: lang === 'EN' ? '1 month' : lang === 'AR' ? 'شهر' : '1 mois', days: 30 },
+                          { label: lang === 'EN' ? '3 months' : lang === 'AR' ? '3 أشهر' : '3 mois', days: 90 },
                         ].map(({ label, days }) => {
                           const d = new Date(); d.setDate(d.getDate() + days);
                           const val = d.toISOString().split('T')[0];
@@ -2347,11 +2347,11 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div className="group">
                         <label className="text-[9px] font-black uppercase tracking-widest text-gray-400 ml-1 mb-1.5 block transition-colors group-focus-within:text-orange">
-                          💼 Diplôme requis
+                          {lang === 'EN' ? '💼 Required diploma' : lang === 'AR' ? '💼 المؤهل المطلوب' : '💼 Diplôme requis'}
                         </label>
                         <select value={newNeed.diplomaRequired} onChange={e => setNewNeed({...newNeed, diplomaRequired: e.target.value})}
                           className="w-full bg-white px-4 py-3 rounded-xl border-2 border-gray-100 outline-none focus:border-orange font-bold text-navy text-sm transition-all appearance-none shadow-sm">
-                          <option value="">Non requis</option>
+                          <option value="">{lang === 'EN' ? 'Not required' : lang === 'AR' ? 'غير مطلوب' : 'Non requis'}</option>
                           {dynDiplomas.length > 0
                             ? dynDiplomas.map(d => <option key={d.id} value={d.value}>{d.label}</option>)
                             : ['BEP / CAP','Baccalauréat','BTS / DUT','Licence / Bachelor','Master / Ingénieur','Doctorat'].map(d => <option key={d} value={d}>{d}</option>)
@@ -2360,11 +2360,11 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                       </div>
                       <div className="group">
                         <label className="text-[9px] font-black uppercase tracking-widest text-gray-400 ml-1 mb-1.5 block transition-colors group-focus-within:text-orange">
-                          💰 Fourchette salaire (DJF)
+                          {lang === 'EN' ? '💰 Salary range (DJF)' : lang === 'AR' ? '💰 نطاق الراتب (DJF)' : '💰 Fourchette salaire (DJF)'}
                         </label>
                         <select value={newNeed.salaryRange} onChange={e => setNewNeed({...newNeed, salaryRange: e.target.value})}
                           className="w-full bg-white px-4 py-3 rounded-xl border-2 border-gray-100 outline-none focus:border-orange font-bold text-navy text-sm transition-all appearance-none shadow-sm">
-                          <option value="">Non précisé</option>
+                          <option value="">{lang === 'EN' ? 'Not specified' : lang === 'AR' ? 'غير محدد' : 'Non précisé'}</option>
                           {dynSalaries.length > 0
                             ? dynSalaries.map(s => <option key={s.id} value={s.value}>{s.label}</option>)
                             : [
@@ -2387,7 +2387,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                     {/* Compétences clés — tags interactifs */}
                     <div>
                       <label className="text-[9px] font-black uppercase tracking-widest text-gray-400 ml-1 mb-1.5 block">
-                        Compétences clés
+                        {lang === 'EN' ? 'Key skills' : lang === 'AR' ? 'المهارات الرئيسية' : 'Compétences clés'}
                       </label>
 
                       {/* Tags sélectionnés */}
