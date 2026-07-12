@@ -17,12 +17,13 @@ import { useTranslation } from '../lib/i18n';
 import { useCompanyInfo } from '../lib/useCompanyInfo';
 import { 
   collection, query, where, orderBy, onSnapshot, addDoc, updateDoc,
-  serverTimestamp, doc, getDocs, setDoc, getDoc
+  serverTimestamp, doc, getDocs, setDoc, getDoc, limit
 } from 'firebase/firestore';
 import { 
   signInWithEmailAndPassword, createUserWithEmailAndPassword,
   sendPasswordResetEmail, signOut, updateProfile
 } from 'firebase/auth';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 
 const Logo = ({ inverted = false, size = "sm" }: { inverted?: boolean; size?: "sm" | "md" | "lg" }) => {
   const sizes = {
@@ -112,6 +113,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [recruiterProfile, setRecruiterProfile] = useState<any>(null);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
+  const [pricingConfig, setPricingConfig] = useState<any>({ freeJobsLimit: 1, proJobsLimit: -1, freeApplicationsLimit: 5, freeRequestsLimit: 1 });
   const [onboardingStep, setOnboardingStep] = useState(1);
   const [savingOnboarding, setSavingOnboarding] = useState(false);
   const [needs, setNeeds] = useState<any[]>([]);
@@ -214,6 +216,21 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
     return () => unsubs.forEach(u => u());
   }, []);
 
+  // Charger les limites du plan (offres Free/Pro) depuis settings_pricing
+  useEffect(() => {
+    getDoc(doc(db, 'settings_pricing', 'config')).then(snap => {
+      if (snap.exists()) {
+        const d = snap.data() as any;
+        setPricingConfig((prev: any) => ({
+          ...prev,
+          freeJobsLimit: d.freeJobsLimit ?? 1,
+          proJobsLimit: d.proJobsLimit ?? -1, // -1 = illimité
+          freeApplicationsLimit: d.freeApplicationsLimit ?? 5,
+        }));
+      }
+    }).catch(() => {});
+  }, []);
+
   // Fix hydration mismatch — date only set client-side
   useEffect(() => {
     setFormattedDate(new Date().toLocaleDateString(
@@ -308,17 +325,42 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
     return () => { unsubscribe(); unsubProps(); };
   }, [user]);
 
-  // ── Candidate base — only loaded for Pro recruiters with an active plan,
-  // since matching/full candidate access is a paid feature (see RecruiterPricing).
+  // ── Candidate base — accès complet en Pro actif ; en Free, accès plafonné
+  // à `freeApplicationsLimit` profils (configurable par l'admin), au lieu
+  // d'aucun accès (comportement précédent).
   const isProActive = recruiterProfile?.plan === 'pro' && recruiterProfile?.planStatus === 'active';
+
+  // Limite d'offres actives selon le plan (Free ou Pro, configurable par l'admin)
+  const activeJobsCount = needs.filter((n: any) => n.status !== 'archived' && n.status !== 'expired' && n.status !== 'draft').length;
+  const jobsLimit = isProActive ? pricingConfig.proJobsLimit : pricingConfig.freeJobsLimit;
+  const jobsLimitReached = jobsLimit !== -1 && activeJobsCount >= jobsLimit;
+
+  // Plafond mensuel de demandes (freeRequestsLimit, Free uniquement — le Pro
+  // n'est jamais concerné par ce compteur, seulement par jobsLimit ci-dessus).
+  // Compte les demandes CRÉÉES dans le mois calendaire en cours, peu importe
+  // leur statut actuel (contrairement à activeJobsCount qui ne compte que les
+  // offres encore actives). Purement indicatif côté UI — la vraie limite est
+  // appliquée côté serveur via requestLimitOk() dans firestore.rules.
+  const nowDate = new Date();
+  const currentMonthKey = `${nowDate.getFullYear()}-${String(nowDate.getMonth() + 1).padStart(2, '0')}`;
+  const requestsThisMonth = needs.filter((n: any) => {
+    const cd = n.createdAt?.toDate?.();
+    if (!cd) return false;
+    const key = `${cd.getFullYear()}-${String(cd.getMonth() + 1).padStart(2, '0')}`;
+    return key === currentMonthKey;
+  }).length;
+  const requestsLimit = pricingConfig.freeRequestsLimit ?? 1;
+  const requestsLimitReached = !isProActive && requestsLimit !== -1 && requestsThisMonth >= requestsLimit;
   useEffect(() => {
-    if (!user || !isProActive) { setCandidates([]); return; }
-    const qUsers = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
+    if (!user) { setCandidates([]); return; }
+    const qUsers = isProActive
+      ? query(collection(db, 'users'), orderBy('createdAt', 'desc'))
+      : query(collection(db, 'users'), orderBy('createdAt', 'desc'), limit(pricingConfig.freeApplicationsLimit));
     const unsubUsers = onSnapshot(qUsers, (snap) => {
       setCandidates(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     }, (err) => console.error('Candidates listen error:', err));
     return () => unsubUsers();
-  }, [user, isProActive]);
+  }, [user, isProActive, pricingConfig.freeApplicationsLimit]);
 
   useEffect(() => {
     if (!user) return;
@@ -531,6 +573,22 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
   const handleAddNeed = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
+    if (jobsLimitReached) {
+      alert(
+        lang === 'FR'
+          ? `Limite atteinte : votre plan ${isProActive ? 'Pro' : 'Gratuit'} autorise ${jobsLimit} offre(s) active(s) maximum. Archivez une offre existante ou passez à un plan supérieur.`
+          : `Limit reached: your ${isProActive ? 'Pro' : 'Free'} plan allows ${jobsLimit} active offer(s) max. Archive an existing offer or upgrade your plan.`
+      );
+      return;
+    }
+    if (requestsLimitReached) {
+      alert(
+        lang === 'FR'
+          ? `Limite atteinte : votre plan Gratuit autorise ${requestsLimit} demande(s) par mois. Passez à un plan supérieur pour en soumettre davantage.`
+          : `Limit reached: your Free plan allows ${requestsLimit} request(s) per month. Upgrade your plan to submit more.`
+      );
+      return;
+    }
     setSubmitting(true);
     try {
       await addDoc(collection(db, 'needs'), {
@@ -1425,6 +1483,12 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                 setNeedsPerPage={setNeedsPerPage}
                 setShowAddNeed={setShowAddNeed}
                 setSelectedNeed={setSelectedNeed}
+                jobsLimitReached={jobsLimitReached}
+                jobsLimit={jobsLimit}
+                requestsLimitReached={requestsLimitReached}
+                requestsThisMonth={requestsThisMonth}
+                requestsLimit={requestsLimit}
+                isProActive={isProActive}
                 t={t}
               />
             ) : activeTab === 'propositions' ? (
@@ -1635,7 +1699,7 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                         {/* Grille avantages Pro */}
                         <div className="border-t border-white/10 grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-white/10">
                           {[
-                            { icon: '📋', label: 'Offres', value: 'Illimitées' },
+                            { icon: '📋', label: 'Offres', value: pricingConfig.proJobsLimit === -1 ? 'Illimitées' : `${pricingConfig.proJobsLimit} max` },
                             { icon: '🤖', label: 'Matching IA', value: 'Activé' },
                             { icon: '👥', label: 'Profils', value: 'Accès complet' },
                             { icon: '✉️', label: 'Support', value: 'Prioritaire 2h' },
@@ -1668,27 +1732,13 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                         </div>
                       )}
 
-                      {/* Historique des paiements */}
+                      {/* Historique des paiements + factures téléchargeables */}
                       {recruiterProfile?.planActivatedAt && (
-                        <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-                          <div className="px-6 py-4 border-b border-gray-100">
-                            <p className="font-black text-gray-900 text-sm">Historique de l'abonnement</p>
-                          </div>
-                          <div className="p-4 space-y-3">
-                            <div className="flex items-center justify-between p-4 bg-green-50 rounded-xl border border-green-100">
-                              <div className="flex items-center gap-3">
-                                <div className="w-9 h-9 rounded-xl bg-green-100 flex items-center justify-center">
-                                  <CheckCircle2 size={16} className="text-green-600" />
-                                </div>
-                                <div>
-                                  <p className="font-black text-gray-900 text-sm">Abonnement Pro — {billingLabel[recruiterProfile.planBilling] || 'Mensuel'}</p>
-                                  <p className="text-[11px] text-gray-400">Activé le {new Date(recruiterProfile.planActivatedAt).toLocaleDateString('fr-FR')}</p>
-                                </div>
-                              </div>
-                              <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-[9px] font-black uppercase border border-green-200">Confirmé</span>
-                            </div>
-                          </div>
-                        </div>
+                        <SubscriptionInvoiceHistory
+                          db={db}
+                          email={recruiterProfile?.email || user?.email}
+                          billingLabel={billingLabel}
+                        />
                       )}
                     </div>
                   );
@@ -2786,20 +2836,44 @@ function NeedDetailModal({ selectedNeed, setSelectedNeed, user, recruiterProfile
                 }}
               />
             ) : (
-              <div className="bg-gradient-to-br from-gray-900 to-gray-800 rounded-2xl p-6 text-center">
-                <div className="w-12 h-12 rounded-xl bg-white/10 flex items-center justify-center mx-auto mb-3">
-                  <span className="text-2xl">🤖</span>
+              <div>
+                {/* Aperçu plafonné pour le plan Free — nom / secteur / expérience seulement.
+                    Contact direct + sélection IA restent réservés au Pro. */}
+                {candidates.length > 0 && (
+                  <div className="bg-gray-50 rounded-2xl p-4 mb-4 border border-gray-100">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-3">
+                      Aperçu candidats ({candidates.length} sur base élargie)
+                    </p>
+                    <div className="space-y-2">
+                      {candidates.map((c: any) => (
+                        <div key={c.id} className="flex items-center justify-between bg-white rounded-xl px-4 py-2.5 border border-gray-100">
+                          <div>
+                            <p className="text-xs font-black text-gray-800">
+                              {(c.fullName || c.displayName || 'Candidat').split(' ').map((w: string, i: number) => i === 0 ? w : w[0] + '.').join(' ')}
+                            </p>
+                            <p className="text-[10px] text-gray-400 font-medium">{c.sector || '—'} · {c.experience || '—'}</p>
+                          </div>
+                          <span className="text-[9px] font-black uppercase text-gray-300">🔒 Contact Pro</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="bg-gradient-to-br from-gray-900 to-gray-800 rounded-2xl p-6 text-center">
+                  <div className="w-12 h-12 rounded-xl bg-white/10 flex items-center justify-center mx-auto mb-3">
+                    <span className="text-2xl">🤖</span>
+                  </div>
+                  <p className="text-white font-black text-sm mb-1">Matching IA réservé au plan Pro</p>
+                  <p className="text-gray-400 text-xs font-medium mb-4 max-w-sm mx-auto">
+                    Passez Pro pour voir la base candidats complète, contacter directement les profils et scorer automatiquement les meilleurs pour cette demande.
+                  </p>
+                  <button
+                    onClick={() => { setSelectedNeed(null); setActiveTab('pricing'); }}
+                    className="inline-flex items-center gap-2 bg-white text-gray-900 px-5 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider hover:bg-gray-100 transition-all"
+                  >
+                    ⚡ Passer Pro
+                  </button>
                 </div>
-                <p className="text-white font-black text-sm mb-1">Matching IA réservé au plan Pro</p>
-                <p className="text-gray-400 text-xs font-medium mb-4 max-w-sm mx-auto">
-                  Passez Pro pour scorer et sélectionner vous-même les meilleurs candidats pour cette demande, sans attendre l'équipe Vedior GM.
-                </p>
-                <button
-                  onClick={() => { setSelectedNeed(null); setActiveTab('pricing'); }}
-                  className="inline-flex items-center gap-2 bg-white text-gray-900 px-5 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider hover:bg-gray-100 transition-all"
-                >
-                  ⚡ Passer Pro
-                </button>
               </div>
             )
           )}
@@ -3081,7 +3155,114 @@ const sectorColors: Record<string, string> = {
   catering: '#ec4899', commerce: '#14b8a6', it: '#0ea5e9', finance: '#84cc16',
 };
 
-function NeedsTab({ needs, loading, searchQuery, recruiterProfile, needsPage, setNeedsPage, needsPerPage, setNeedsPerPage, setShowAddNeed, setSelectedNeed, t }: any) {
+// ─────────────────────────────────────────────────────────────
+// Historique réel des paiements du recruteur connecté, avec téléchargement
+// de facture PDF à la demande (Cloud Function `downloadInvoice`, europe-west1,
+// génère si besoin puis renvoie le PDF en base64 — pas de Storage).
+// ─────────────────────────────────────────────────────────────
+function SubscriptionInvoiceHistory({ db, email, billingLabel }: { db: any; email?: string; billingLabel: Record<string, string> }) {
+  const [payments, setPayments] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [errorId, setErrorId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!email) { setLoading(false); return; }
+    const q = query(
+      collection(db, 'payments'),
+      where('recruiterEmail', '==', email),
+      orderBy('createdAt', 'desc')
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setPayments(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setLoading(false);
+    }, () => setLoading(false));
+    return unsub;
+  }, [db, email]);
+
+  const handleDownload = async (paymentId: string) => {
+    setBusyId(paymentId);
+    setErrorId(null);
+    try {
+      const fns = getFunctions(db.app, 'europe-west1');
+      const call = httpsCallable(fns, 'downloadInvoice');
+      const res: any = await call({ paymentId });
+      const { pdfBase64, filename } = res.data;
+      const byteChars = atob(pdfBase64);
+      const bytes = new Uint8Array(byteChars.length);
+      for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+      const blob = new Blob([bytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename || 'facture.pdf';
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('downloadInvoice failed:', e);
+      setErrorId(paymentId);
+      setTimeout(() => setErrorId(null), 3000);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const statusLabel: Record<string, string> = { confirmed: 'Confirmé', pending: 'En attente', rejected: 'Refusé' };
+  const statusColor: Record<string, string> = {
+    confirmed: 'bg-green-100 text-green-700 border-green-200',
+    pending:   'bg-amber-100 text-amber-700 border-amber-200',
+    rejected:  'bg-red-100 text-red-500 border-red-200',
+  };
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+      <div className="px-6 py-4 border-b border-gray-100">
+        <p className="font-black text-gray-900 text-sm">Historique de l'abonnement</p>
+      </div>
+      <div className="p-4 space-y-3">
+        {loading ? (
+          <p className="text-center text-gray-400 text-sm py-6">Chargement...</p>
+        ) : payments.length === 0 ? (
+          <p className="text-center text-gray-400 text-sm py-6">Aucun paiement pour l'instant</p>
+        ) : (
+          payments.map(p => (
+            <div key={p.id} className="flex items-center justify-between p-4 bg-green-50 rounded-xl border border-green-100">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-green-100 flex items-center justify-center">
+                  <CheckCircle2 size={16} className="text-green-600" />
+                </div>
+                <div>
+                  <p className="font-black text-gray-900 text-sm">Abonnement Pro — {billingLabel[p.billing] || 'Mensuel'}</p>
+                  <p className="text-[11px] text-gray-400">
+                    {p.createdAt?.toDate?.()?.toLocaleDateString('fr-FR') || '—'} · {Number(p.amount || 0).toLocaleString('fr-FR')} FDJ
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase border ${statusColor[p.status] || 'bg-gray-100 text-gray-500 border-gray-200'}`}>
+                  {statusLabel[p.status] || p.status}
+                </span>
+                {p.status === 'confirmed' && (
+                  <button
+                    onClick={() => handleDownload(p.id)}
+                    disabled={busyId === p.id}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-wide transition-all disabled:opacity-50 ${
+                      errorId === p.id ? 'bg-red-50 text-red-600' : 'bg-navy/5 text-navy hover:bg-navy hover:text-white'
+                    }`}
+                  >
+                    {busyId === p.id ? '...' : errorId === p.id ? 'Erreur' : '⬇ Facture'}
+                  </button>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+function NeedsTab({ needs, loading, searchQuery, recruiterProfile, needsPage, setNeedsPage, needsPerPage, setNeedsPerPage, setShowAddNeed, setSelectedNeed, jobsLimitReached, jobsLimit, requestsLimitReached, requestsThisMonth, requestsLimit, isProActive, t }: any) {
   const filtered = needs.filter((n: any) =>
     !searchQuery ||
     n.jobTitle?.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -3092,6 +3273,7 @@ function NeedsTab({ needs, loading, searchQuery, recruiterProfile, needsPage, se
   const active = needs.filter((n: any) => n.status !== 'archived' && n.status !== 'expired' && n.status !== 'draft').length;
   const draft = needs.filter((n: any) => n.status === 'draft').length;
   const expired = needs.filter((n: any) => n.status === 'expired').length;
+  const createDisabled = jobsLimitReached || requestsLimitReached;
 
   return (
     <div className="space-y-6">
@@ -3099,8 +3281,31 @@ function NeedsTab({ needs, loading, searchQuery, recruiterProfile, needsPage, se
         <div>
           <h1 className="text-3xl font-black text-gray-900 tracking-tight">{t.admin.recruitmentDemands || 'Catalogue des Demandes'}</h1>
           <p className="text-gray-400 text-sm mt-1">{t.admin.manageDemandsDesc || 'Gérez vos postes ouverts et besoins en personnel'}</p>
+          {jobsLimit !== -1 && (
+            <p className={`text-xs font-bold mt-1 ${jobsLimitReached ? 'text-red-500' : 'text-gray-400'}`}>
+              {active}/{jobsLimit} offre(s) active(s) — plan {isProActive ? 'Pro' : 'Gratuit'}
+            </p>
+          )}
+          {!isProActive && requestsLimit !== -1 && (
+            <p className={`text-xs font-bold mt-1 ${requestsLimitReached ? 'text-red-500' : 'text-gray-400'}`}>
+              {requestsThisMonth}/{requestsLimit} demande(s) ce mois-ci — plan Gratuit
+            </p>
+          )}
         </div>
-        <button onClick={() => setShowAddNeed(true)} className="flex items-center gap-2 bg-navy text-white px-6 py-3 rounded-xl font-black text-sm uppercase tracking-wide shadow-lg hover:bg-orange transition-all">
+        <button
+          onClick={() => {
+            if (jobsLimitReached) {
+              alert(`Limite atteinte : votre plan ${isProActive ? 'Pro' : 'Gratuit'} autorise ${jobsLimit} offre(s) active(s) maximum. Archivez une offre existante ou passez à un plan supérieur.`);
+              return;
+            }
+            if (requestsLimitReached) {
+              alert(`Limite atteinte : votre plan Gratuit autorise ${requestsLimit} demande(s) par mois. Passez à un plan supérieur pour en soumettre davantage.`);
+              return;
+            }
+            setShowAddNeed(true);
+          }}
+          className={`flex items-center gap-2 px-6 py-3 rounded-xl font-black text-sm uppercase tracking-wide shadow-lg transition-all ${createDisabled ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-navy text-white hover:bg-orange'}`}
+        >
           <Plus size={18} /> {t.admin.newDemand || 'Publier une demande'}
         </button>
       </div>
