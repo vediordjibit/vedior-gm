@@ -86,7 +86,7 @@ service cloud.firestore {
         isAdminUser()
         ||
         (
-          (resource.data.uid == uid() || resource.data.email == request.auth.token.email)
+          (resource.data.get('uid', null) == uid() || resource.data.get('userId', null) == uid() || resource.data.get('email', null) == request.auth.token.email)
           && request.resource.data.planExpiry     == resource.data.get('planExpiry', null)
           && request.resource.data.planConfirmedAt == resource.data.get('planConfirmedAt', null)
           && request.resource.data.planActivatedAt == resource.data.get('planActivatedAt', null)
