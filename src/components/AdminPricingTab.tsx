@@ -1044,6 +1044,7 @@ export default function AdminPricingTab({ recruiters, db }: { recruiters: any[];
         amount:         price,
         billing,
         status:        'confirmed',
+        createdAt:     serverTimestamp(),
         confirmedAt:   serverTimestamp(),
         expiryDate:    expiry.toISOString().split('T')[0],
         note:          note || '',
@@ -1183,6 +1184,7 @@ export default function AdminPricingTab({ recruiters, db }: { recruiters: any[];
               source: 'admin_manual',
               reason,
               note: note || '',
+              createdAt: serverTimestamp(),
               confirmedAt: serverTimestamp(),
               expiryDate: expiry.toISOString().split('T')[0],
             });

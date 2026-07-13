@@ -1,0 +1,122 @@
+[2026-07-12T12:30:06.981Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[2026-07-12T12:30:06.982Z] > authorizing via signed-in user (vediordjib.it@gmail.com)
+[2026-07-12T12:30:06.982Z] [iam] checking project vediorgm for permissions ["datastore.indexes.create","datastore.indexes.delete","datastore.indexes.list","datastore.indexes.update","firebase.projects.get","firebasehosting.sites.update","firebaserules.releases.create","firebaserules.releases.update","firebaserules.rulesets.create"]
+[2026-07-12T12:30:06.994Z] Checked if tokens are valid: true, expires at: 1783861736687
+[2026-07-12T12:30:06.995Z] Checked if tokens are valid: true, expires at: 1783861736687
+[2026-07-12T12:30:06.996Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/vediorgm:testIamPermissions [none]
+[2026-07-12T12:30:06.997Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/vediorgm:testIamPermissions  x-goog-user-project=vediorgm
+[2026-07-12T12:30:06.997Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/vediorgm:testIamPermissions {"permissions":["datastore.indexes.create","datastore.indexes.delete","datastore.indexes.list","datastore.indexes.update","firebase.projects.get","firebasehosting.sites.update","firebaserules.releases.create","firebaserules.releases.update","firebaserules.rulesets.create"]}
+[2026-07-12T12:30:08.499Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/vediorgm:testIamPermissions 200
+[2026-07-12T12:30:08.499Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/vediorgm:testIamPermissions {"permissions":["datastore.indexes.create","datastore.indexes.delete","datastore.indexes.list","datastore.indexes.update","firebase.projects.get","firebasehosting.sites.update","firebaserules.releases.create","firebaserules.releases.update","firebaserules.rulesets.create"]}
+[2026-07-12T12:30:08.500Z] Checked if tokens are valid: true, expires at: 1783861736687
+[2026-07-12T12:30:08.500Z] Checked if tokens are valid: true, expires at: 1783861736687
+[2026-07-12T12:30:08.500Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/vediorgm [none]
+[2026-07-12T12:30:09.132Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/vediorgm 200
+[2026-07-12T12:30:09.132Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/vediorgm {"projectId":"vediorgm","projectNumber":"790538302349","displayName":"VediorGM","name":"projects/vediorgm","resources":{"hostingSite":"vediorgm"},"state":"ACTIVE","labels":{"firebase":"enabled","firebase/storage-default-bucket":"created"},"etag":"1_d8550b29-0a17-4931-b7dd-b6421c32d42f"}
+[2026-07-12T12:30:11.906Z] defaultcredentials: writing to file C:\Users\Ardo_Travel\AppData\Roaming\firebase\vediordjib_it_gmail.com_application_default_credentials.json
+[2026-07-12T12:30:11.907Z] Checked if tokens are valid: true, expires at: 1783861736687
+[2026-07-12T12:30:11.907Z] Checked if tokens are valid: true, expires at: 1783861736687
+[2026-07-12T12:30:11.907Z] >>> [apiv2][query] GET https://firebasehosting.googleapis.com/v1beta1/projects/vediorgm/sites pageToken=&pageSize=10
+[2026-07-12T12:30:14.308Z] <<< [apiv2][status] GET https://firebasehosting.googleapis.com/v1beta1/projects/vediorgm/sites 200
+[2026-07-12T12:30:14.308Z] <<< [apiv2][body] GET https://firebasehosting.googleapis.com/v1beta1/projects/vediorgm/sites {"sites":[{"name":"projects/vediorgm/sites/vediorgm","defaultUrl":"https://vediorgm.web.app","appId":"1:790538302349:web:a01881c1f0a155abd0c3c4","type":"DEFAULT_SITE"}]}
+[2026-07-12T12:30:14.309Z] Checked if tokens are valid: true, expires at: 1783861736687
+[2026-07-12T12:30:14.309Z] Checked if tokens are valid: true, expires at: 1783861736687
+[2026-07-12T12:30:14.309Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/-/webApps/1:790538302349:web:a01881c1f0a155abd0c3c4/config [none]
+[2026-07-12T12:30:15.431Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/-/webApps/1:790538302349:web:a01881c1f0a155abd0c3c4/config 200
+[2026-07-12T12:30:15.431Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/-/webApps/1:790538302349:web:a01881c1f0a155abd0c3c4/config {"projectId":"vediorgm","appId":"1:790538302349:web:a01881c1f0a155abd0c3c4","storageBucket":"vediorgm.firebasestorage.app","apiKey":"AIzaSyCjb-2sd5jgoUt7U-E3lWTQnuuX7xO0GPs","authDomain":"vediorgm.firebaseapp.com","messagingSenderId":"790538302349","measurementId":"G-PG14QW7893","projectNumber":"790538302349","version":"2"}
+
+   Thank you for trying our early preview of Next.js support on Firebase Hosting.
+   During the preview, support is best-effort and breaking changes can be expected. Proceed with caution.
+   The integration is known to work with Next.js version 12 - 16.0. You may encounter errors.
+
+   Documentation: https://firebase.google.com/docs/hosting/frameworks/nextjs
+   File a bug: https://github.com/firebase/firebase-tools/issues/new?template=bug_report.md
+   Submit a feature request: https://github.com/firebase/firebase-tools/issues/new?template=feature_request.md
+
+   We'd love to learn from you. Express your interest in helping us shape the future of Firebase Hosting: https://goo.gle/41enW5X
+
+[2026-07-12T12:30:21.466Z] Checked if tokens are valid: true, expires at: 1783861736687
+[2026-07-12T12:30:21.466Z] Checked if tokens are valid: true, expires at: 1783861736687
+[2026-07-12T12:30:21.466Z] >>> [apiv2][query] GET https://firebasehosting.googleapis.com/v1beta1/projects/vediorgm/sites/vediorgm [none]
+[2026-07-12T12:30:23.705Z] <<< [apiv2][status] GET https://firebasehosting.googleapis.com/v1beta1/projects/vediorgm/sites/vediorgm 200
+[2026-07-12T12:30:23.706Z] <<< [apiv2][body] GET https://firebasehosting.googleapis.com/v1beta1/projects/vediorgm/sites/vediorgm {"name":"projects/vediorgm/sites/vediorgm","defaultUrl":"https://vediorgm.web.app","appId":"1:790538302349:web:a01881c1f0a155abd0c3c4","type":"DEFAULT_SITE"}
+▲ Next.js 16.2.6 (Turbopack)
+
+- Environments: .env.production
+
+
+  Creating an optimized production build ...
+
+
+
+[387.65ms] [@tailwindcss/postcss] src\app\globals.css
+[  0.08ms]   ↳ Quick bail check
+[ 52.26ms]   ↳ Setup compiler
+[  0.42ms]     ↳ PostCSS AST -> Tailwind CSS AST
+[ 51.81ms]     ↳ Create compiler
+[  0.25ms]   ↳ Register full rebuild paths
+[  5.59ms]   ↳ Setup scanner
+[ 43.56ms]   ↳ Scan for candidates
+[ 29.83ms]   ↳ Register dependency messages
+[149.02ms]   ↳ Build utilities
+[ 91.60ms]   ↳ Optimization
+[  3.44ms]     ↳ AST -> CSS
+[ 61.22ms]     ↳ Lightning CSS
+[ 26.83ms]     ↳ CSS -> PostCSS AST
+[ 14.82ms]   ↳ Update PostCSS AST
+
+
+✓ Compiled successfully in 4.2s
+
+  Running TypeScript ...
+
+  Finished TypeScript in 8.6s ...
+
+  Collecting page data using 9 workers ...
+
+⚠ Using edge runtime on a page currently disables static generation for that page
+
+[firebaseAdmin] ADMIN_SDK_KEY manquant — generatePasswordResetLink() ne fonctionnera pas. Ajoutez le secret dans Firebase App Hosting ou dans .env.local pour le développement.
+
+  Generating static pages using 9 workers (0/4) ...
+
+  Generating static pages using 9 workers (1/4) 
+
+  Generating static pages using 9 workers (2/4) 
+
+  Generating static pages using 9 workers (3/4) 
+
+✓ Generating static pages using 9 workers (4/4) in 623ms
+
+  Finalizing page optimization ...
+
+
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ƒ /api/groq
+├ ƒ /api/match
+├ ƒ /api/scan-cv
+└ ƒ /api/send-welcome
+
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+
+Building a Cloud Function to run this application. This is needed due to:
+ • non-static component /api/groq/route
+ • non-static component /api/scan-cv/route
+ • non-static component /api/send-welcome/route
+ • advanced rewrites
+
+[2026-07-12T12:30:47.675Z] Checked if tokens are valid: true, expires at: 1783861736687
+[2026-07-12T12:30:47.675Z] Checked if tokens are valid: true, expires at: 1783861736687
+[2026-07-12T12:30:47.675Z] >>> [apiv2][query] GET https://firebasehosting.googleapis.com/v1beta1/projects/vediorgm/sites/vediorgm [none]
+[2026-07-12T12:30:49.496Z] <<< [apiv2][status] GET https://firebasehosting.googleapis.com/v1beta1/projects/vediorgm/sites/vediorgm 200
+[2026-07-12T12:30:49.496Z] <<< [apiv2][body] GET https://firebasehosting.googleapis.com/v1beta1/projects/vediorgm/sites/vediorgm {"name":"projects/vediorgm/sites/vediorgm","defaultUrl":"https://vediorgm.web.app","appId":"1:790538302349:web:a01881c1f0a155abd0c3c4","type":"DEFAULT_SITE"}
+[2026-07-12T12:30:50.601Z] Error: EPERM: operation not permitted, symlink 'C:\vedior-gm-clean\node_modules\firebase-admin' -> 'C:\vedior-gm-clean\.firebase\vediorgm\functions\.next\node_modules\firebase-admin-a14c8a5423a75469'
+
+Error: An unexpected error has occurred.
