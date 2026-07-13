@@ -455,10 +455,12 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
     setAuthError('');
     setAuthLoading(true);
     try {
-      await sendPasswordResetEmail(auth, authEmail);
+      const fns = getFunctions(db.app, 'europe-west1');
+      const call = httpsCallable(fns, 'requestPasswordReset');
+      await call({ email: authEmail });
       setResetSent(true);
     } catch (error: any) {
-      setAuthError('Email introuvable ou invalide.');
+      setAuthError(error.code === 'functions/resource-exhausted' ? 'Trop de tentatives. Réessayez dans 15 minutes.' : 'Email introuvable ou invalide.');
     } finally {
       setAuthLoading(false);
     }
@@ -550,7 +552,9 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
   const handleResetPasswordFromSettings = async () => {
     if (!user?.email) return;
     try {
-      await sendPasswordResetEmail(auth, user.email);
+      const fns = getFunctions(db.app, 'europe-west1');
+      const call = httpsCallable(fns, 'requestPasswordReset');
+      await call({ email: user.email });
       alert('Email de réinitialisation envoyé à ' + user.email);
     } catch (err) {
       console.error(err);

@@ -17,6 +17,7 @@ import {
 import { db, auth, storage } from '../lib/firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { getApp, getApps, initializeApp } from 'firebase/app';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { useTranslation } from '../lib/i18n';
 import MatchingPanel from './MatchingPanel';
 import AdminPricingTab from './AdminPricingTab';
@@ -726,10 +727,15 @@ Réponds UNIQUEMENT avec un objet JSON valide (pas de texte avant ou après) ave
     setLoginError('');
     setLoginLoading(true);
     try {
-      await sendPasswordResetEmail(auth, loginEmail);
+      // Via Cloud Function publique (Resend) — plus l'email natif Firebase.
+      // Réponse toujours "succès" côté fonction (anti-énumération), donc pas
+      // de distinction "compte introuvable" ici non plus.
+      const fns = getFunctions(getApp(), 'europe-west1');
+      const call = httpsCallable(fns, 'requestPasswordReset');
+      await call({ email: loginEmail });
       setResetSent(true);
     } catch (err: any) {
-      setLoginError(err.code === 'auth/user-not-found' ? 'Aucun compte avec cet email.' : "Erreur. Vérifiez l'email.");
+      setLoginError(err.code === 'functions/resource-exhausted' ? 'Trop de tentatives. Réessayez dans 15 minutes.' : "Erreur. Vérifiez l'email.");
     } finally {
       setLoginLoading(false);
     }
@@ -1916,8 +1922,8 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
       const tempId = newUser.role !== 'admin' ? await generateTempId() : '';
 
       // ── 2bis. Envoyer l'email de bienvenue via notre route Resend (template perso).
-      // Pour recruiter/candidate : passe par /api/send-welcome (noreply@vediorgm.com + reply-to Gmail).
-      // Pour admin (pas de template dédié) : on garde le mail natif Firebase en secours.
+      // Recruteur, candidat ET admin passent tous par /api/send-welcome (Resend).
+      // Plus aucun email natif Firebase pour la création de compte.
       let realEmailSent = false;
       try {
         if (newUser.role === 'recruiter') {
@@ -1948,13 +1954,18 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
           realEmailSent = res.ok;
           if (!res.ok) console.error('send-welcome (candidate) failed:', await res.text());
         } else {
-          // Admin : pas de template Resend dédié, on garde le lien Firebase natif
-          const secondaryApp2 = getApps().find(a => a.name === 'Secondary')
-            ?? initializeApp(getApp().options, 'Secondary');
-          const secondaryAuth2 = getAuth(secondaryApp2);
-          await sendPasswordResetEmail(secondaryAuth2, newUser.email);
-          await signOut(secondaryAuth2);
-          realEmailSent = true;
+          // Admin : même route Resend que recruteur/candidat (plus de fallback natif Firebase)
+          const res = await fetch('/api/send-welcome', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              type: 'admin',
+              contactName: newUser.contactName || newUser.fullName || '',
+              email: newUser.email,
+            }),
+          });
+          realEmailSent = res.ok;
+          if (!res.ok) console.error('send-welcome (admin) failed:', await res.text());
         }
       } catch (emailErr: any) {
         console.error('Welcome email failed:', emailErr);

@@ -25,6 +25,7 @@ import {
 import {
   getDocs
 } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 
 const Logo = ({ inverted = false, size = "sm" }: { inverted?: boolean; size?: "sm" | "md" | "lg" }) => {
   const sizes = {
@@ -719,8 +720,14 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
       const cred = await createUserWithEmailAndPassword(auth, loginEmail, loginPassword);
       const u = cred.user;
 
-      // BUG 7 FIX: Send email verification
-      await sendEmailVerification(u);
+      // BUG 7 FIX: Send email verification — via Resend (Cloud Function), plus l'email natif Firebase
+      try {
+        const fns = getFunctions(db.app, 'europe-west1');
+        const call = httpsCallable(fns, 'sendVerificationEmail');
+        await call({});
+      } catch (verifyErr) {
+        console.error('sendVerificationEmail failed:', verifyErr);
+      }
 
       // Save to Firestore
       const { doc: d2, setDoc: sd } = await import('firebase/firestore');
@@ -770,12 +777,14 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
     if (!loginEmail) { setLoginError('Entrez votre adresse email.'); return; }
     setLoginLoading(true);
     try {
-      await sendPasswordResetEmail(auth, loginEmail);
+      const fns = getFunctions(db.app, 'europe-west1');
+      const call = httpsCallable(fns, 'requestPasswordReset');
+      await call({ email: loginEmail });
       setLoginResetSent(true);
       setLoginPassword('');
       setLoginConfirm('');
     } catch (error: any) {
-      setLoginError('Email introuvable ou invalide.');
+      setLoginError(error.code === 'functions/resource-exhausted' ? 'Trop de tentatives. Réessayez dans 15 minutes.' : 'Email introuvable ou invalide.');
     } finally {
       setLoginLoading(false);
     }
