@@ -87,9 +87,9 @@ service cloud.firestore {
         ||
         (
           (resource.data.get('uid', null) == uid() || resource.data.get('userId', null) == uid() || resource.data.get('email', null) == request.auth.token.email)
-          && request.resource.data.planExpiry     == resource.data.get('planExpiry', null)
-          && request.resource.data.planConfirmedAt == resource.data.get('planConfirmedAt', null)
-          && request.resource.data.planActivatedAt == resource.data.get('planActivatedAt', null)
+          && request.resource.data.get('planExpiry', null)     == resource.data.get('planExpiry', null)
+          && request.resource.data.get('planConfirmedAt', null) == resource.data.get('planConfirmedAt', null)
+          && request.resource.data.get('planActivatedAt', null) == resource.data.get('planActivatedAt', null)
           && (
                request.resource.data.get('planStatus', null) == resource.data.get('planStatus', null)
                || request.resource.data.get('planStatus', null) == 'pending_confirmation'
