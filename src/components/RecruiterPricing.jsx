@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { db } from "../lib/firebase";
-import { collection, query, where, getDocs, getDoc, updateDoc, doc, orderBy, onSnapshot } from "firebase/firestore";
+import { collection, query, where, getDocs, getDoc, updateDoc, addDoc, doc, orderBy, onSnapshot } from "firebase/firestore";
 import { getAuth } from "firebase/auth";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { motion, AnimatePresence } from "framer-motion";
@@ -169,6 +169,41 @@ const fmtExp=v=>{const d=v.replace(/\D/g,"").slice(0,4);return d.length>=3?d.sli
 // `recruiterEmail` (correspond à la règle Firestore payments), téléchargement
 // via la Cloud Function `downloadInvoice` (génère si besoin, europe-west1).
 // ─────────────────────────────────────────────
+// Shared helper: update planStatus in users + recruiters regardless of how account was created
+async function updatePlanStatus(db, userUid, userEmail, data) {
+  let updated = false;
+  for (const col of ['users', 'recruiters']) {
+    for (const field of ['userId', 'firebaseUid', 'uid']) {
+      try {
+        const snap = await getDocs(query(collection(db, col), where(field, '==', userUid)));
+        if (!snap.empty) {
+          await updateDoc(doc(db, col, snap.docs[0].id), data);
+          updated = true;
+          break;
+        }
+      } catch (_) {}
+    }
+  }
+  if (!updated && userEmail) {
+    for (const col of ['users', 'recruiters']) {
+      try {
+        const snap = await getDocs(query(collection(db, col), where('email', '==', userEmail)));
+        if (!snap.empty) {
+          await updateDoc(doc(db, col, snap.docs[0].id), data);
+          updated = true;
+          break;
+        }
+      } catch (_) {}
+    }
+  }
+  if (!updated) {
+    await addDoc(collection(db, 'pendingPayments'), {
+      ...data, userUid, userEmail, createdAt: new Date().toISOString(),
+    }).catch(() => {});
+  }
+}
+
+
 function MyInvoices({ lang }) {
   const [payments, setPayments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -272,11 +307,16 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
   const [card,setCard]=useState({number:"",name:"",expiry:"",cvv:""});
   const [pricing, setPricing] = useState(DEFAULT_PRICING);
 
-  // Load pricing config from Firestore
+  // Load pricing config from Firestore (real-time, so admin toggles apply instantly)
   useEffect(() => {
-    getDoc(doc(db, 'settings_pricing', 'config')).then(snap => {
-      if (snap.exists()) setPricing(prev => ({ ...prev, ...snap.data() }));
-    }).catch(() => {});
+    const unsub = onSnapshot(
+      doc(db, 'settings_pricing', 'config'),
+      (snap) => {
+        if (snap.exists()) setPricing(prev => ({ ...prev, ...snap.data() }));
+      },
+      () => {}
+    );
+    return () => unsub();
   }, []);
 
   // Dynamic PLANS from Firestore pricing
@@ -654,45 +694,61 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
                   )}
                 </AnimatePresence>
 
-                {paymentMethods.length>0&&method!=="transfer"&&(
-                  <button onClick={async ()=>{
-                    try {
-                      const auth = getAuth();
-                      const user = auth.currentUser;
-                      if (user) {
-                        // Mettre à jour dans users collection
-                        const usersRef = collection(db, 'users');
-                        const q = query(usersRef, where('uid', '==', user.uid));
-                        const snap = await getDocs(q);
-                        if (!snap.empty) {
-                          await updateDoc(doc(db, 'users', snap.docs[0].id), {
+                {paymentMethods.length>0&&(
+                  <div style={{marginTop:20}}>
+                    {/* Payment reference input */}
+                    <div style={{marginBottom:12}}>
+                      <label style={{display:"block",fontSize:10,fontWeight:800,textTransform:"uppercase",letterSpacing:"1.5px",color:"rgba(255,255,255,0.4)",marginBottom:8}}>
+                        {lang==="FR"?"📎 Référence de paiement *":"📎 Payment reference *"}
+                      </label>
+                      <input
+                        type="text"
+                        value={paymentRef}
+                        onChange={e=>setPaymentRef(e.target.value)}
+                        placeholder={
+                          method==="cac"
+                            ? (lang==="FR"?"Ex: CAC-2025-78432 ou numéro de transaction":"Ex: CAC-2025-78432 or transaction number")
+                            : method==="transfer"
+                              ? (lang==="FR"?"Ex: VIR-BCI-20250607-001":"Ex: VIR-BCI-20250607-001")
+                              : (lang==="FR"?"Ex: REF-CARD-20250607":"Ex: REF-CARD-20250607")
+                        }
+                        style={{width:"100%",background:"rgba(255,255,255,0.06)",border:`1px solid ${paymentRef.trim()?"rgba(59,130,246,0.5)":"rgba(255,255,255,0.12)"}`,borderRadius:12,padding:"12px 16px",color:"#fff",fontSize:13,fontWeight:600,outline:"none",boxSizing:"border-box",transition:"border-color 0.2s",letterSpacing:"0.5px"}}
+                      />
+                      <p style={{fontSize:10,color:"rgba(255,255,255,0.25)",marginTop:5,fontStyle:"italic"}}>
+                        {lang==="FR"
+                          ? "Cette référence sera transmise à l'admin pour valider votre paiement."
+                          : "This reference will be sent to the admin to validate your payment."}
+                      </p>
+                    </div>
+
+                    <button
+                      disabled={!paymentRef.trim()}
+                      onClick={async ()=>{
+                        if (!paymentRef.trim()) return;
+                        try {
+                          const authInst = getAuth();
+                          const currentUser = authInst.currentUser;
+                          if (!currentUser) { alert(lang==="FR"?"Non connecté":"Not logged in"); return; }
+                          await updatePlanStatus(db, currentUser.uid, currentUser.email, {
                             plan: 'pro',
                             planBilling: billing,
                             planActivatedAt: new Date().toISOString(),
+                            planRequestedAt: new Date().toISOString(),
                             planStatus: 'pending_confirmation',
+                            paymentMethod: method,
+                            paymentRef: paymentRef.trim(),
                           });
+                          setPaymentRef("");
+                          alert(lang==="FR"?"✅ Paiement initié — confirmation par email sous 24h.":"✅ Payment initiated — confirmation by email within 24h.");
+                        } catch(e) {
+                          console.error('Payment error:', e);
+                          alert(lang==="FR"?"Erreur. Contactez Vedior GM.":"Error. Contact Vedior GM.");
                         }
-                        // Aussi mettre à jour dans recruiters collection
-                        const recRef = collection(db, 'recruiters');
-                        const q2 = query(recRef, where('uid', '==', user.uid));
-                        const snap2 = await getDocs(q2);
-                        if (!snap2.empty) {
-                          await updateDoc(doc(db, 'recruiters', snap2.docs[0].id), {
-                            plan: 'pro',
-                            planBilling: billing,
-                            planActivatedAt: new Date().toISOString(),
-                            planStatus: 'pending_confirmation',
-                          });
-                        }
-                      }
-                      alert(lang==="FR"?"✅ Paiement initié — confirmation par email sous 24h.":"✅ Payment initiated — confirmation by email within 24h.");
-                    } catch(e) {
-                      alert(lang==="FR"?"✅ Paiement initié — confirmation par email.":"✅ Payment initiated — confirmation by email.");
-                    }
-                  }}
-                    style={{width:"100%",marginTop:20,padding:"16px",borderRadius:14,border:"none",background:"linear-gradient(135deg,#3b82f6,#6366f1)",color:"#fff",fontSize:13,fontWeight:900,textTransform:"uppercase",letterSpacing:"1.5px",cursor:"pointer",boxShadow:"0 8px 24px rgba(59,130,246,0.3)"}}>
-                    {method==="card"?t.payBtn(price):t.cacBtn}
-                  </button>
+                      }}
+                      style={{width:"100%",padding:"16px",borderRadius:14,border:"none",background:paymentRef.trim()?"linear-gradient(135deg,#3b82f6,#6366f1)":"rgba(255,255,255,0.08)",color:paymentRef.trim()?"#fff":"rgba(255,255,255,0.3)",fontSize:13,fontWeight:900,textTransform:"uppercase",letterSpacing:"1.5px",cursor:paymentRef.trim()?"pointer":"not-allowed",boxShadow:paymentRef.trim()?"0 8px 24px rgba(59,130,246,0.3)":"none",transition:"all 0.2s"}}>
+                      {method==="card"?t.payBtn(price):method==="transfer"?(lang==="FR"?"✅ J\'ai effectué le virement":"✅ I\'ve made the transfer"):t.cacBtn}
+                    </button>
+                  </div>
                 )}
                 <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginTop:14,opacity:0.3}}>
                   <span>🔒</span><span style={{fontSize:11,fontWeight:600}}>{t.secure}</span>

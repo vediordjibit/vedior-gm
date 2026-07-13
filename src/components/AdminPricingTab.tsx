@@ -572,12 +572,28 @@ function PendingPayments({ recruiters, onConfirm, onReject, config }: {
                   <p className="text-[10px] text-gray-400">{rec.planActivatedAt ? new Date(rec.planActivatedAt).toLocaleDateString('fr-FR') : ''}</p>
                 </div>
               </div>
-              <input
-                placeholder="Note optionnelle (ex: reçu CAC Pay #12345)"
-                value={notes[rec.id] || ''}
-                onChange={e => setNotes(n => ({ ...n, [rec.id]: e.target.value }))}
-                className="w-full bg-white border border-amber-200 rounded-xl px-4 py-2.5 text-sm font-medium outline-none focus:border-amber-400 transition-all"
-              />
+
+              {/* Payment method + reference submitted by recruiter */}
+              <div className="grid grid-cols-2 gap-3">
+                {(rec as any).paymentMethod && (
+                  <div className="bg-white border border-amber-100 rounded-xl px-4 py-2.5">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 mb-0.5">Mode de paiement</p>
+                    <p className="text-sm font-black text-gray-800 capitalize">
+                      {(rec as any).paymentMethod === 'cac' ? '📱 CAC Pay'
+                        : (rec as any).paymentMethod === 'transfer' ? '🏦 Virement'
+                        : (rec as any).paymentMethod === 'card' ? '💳 Carte'
+                        : (rec as any).paymentMethod}
+                    </p>
+                  </div>
+                )}
+                {(rec as any).paymentRef && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-2.5">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-blue-400 mb-0.5">Référence envoyée</p>
+                    <p className="text-sm font-black text-blue-700 font-mono tracking-wide">{(rec as any).paymentRef}</p>
+                  </div>
+                )}
+              </div>
+
               {/* Résumé abonnement */}
               <div className="grid grid-cols-3 gap-3 bg-white rounded-xl p-4 border border-amber-100">
                 <div>
@@ -596,15 +612,28 @@ function PendingPayments({ recruiters, onConfirm, onReject, config }: {
                 </div>
               </div>
 
+              {/* Admin note + confirmation reference */}
+              <div className="space-y-2">
+                <input
+                  placeholder={`Référence de confirmation admin * (ex: ${(rec as any).paymentMethod === 'cac' ? 'CAC-2025-78432' : (rec as any).paymentMethod === 'transfer' ? 'VIR-BCI-20250607' : 'REF-ADMIN-001'})`}
+                  value={notes[rec.id] || ''}
+                  onChange={e => setNotes(n => ({ ...n, [rec.id]: e.target.value }))}
+                  className="w-full bg-white border border-amber-300 rounded-xl px-4 py-2.5 text-sm font-medium outline-none focus:border-amber-500 transition-all font-mono"
+                />
+                <p className="text-[10px] text-amber-600 font-medium">
+                  ⚠️ La référence est obligatoire pour confirmer le paiement
+                </p>
+              </div>
+
               <div className="flex gap-2">
                 <button
-                  disabled={loading[rec.id]}
+                  disabled={loading[rec.id] || !notes[rec.id]?.trim()}
                   onClick={async () => {
                     setLoading(l => ({ ...l, [rec.id]: true }));
                     await onConfirm(rec, notes[rec.id]);
                     setLoading(l => ({ ...l, [rec.id]: false }));
                   }}
-                  className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-green-600 text-white font-black text-xs hover:bg-green-700 transition-all disabled:opacity-50 shadow-lg shadow-green-600/20">
+                  className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-green-600 text-white font-black text-xs hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-green-600/20">
                   {loading[rec.id]
                     ? <><RefreshCw size={14} className="animate-spin" /> Traitement...</>
                     : <><Zap size={14} /> Confirmer & Activer — Email auto</>
@@ -994,14 +1023,15 @@ export default function AdminPricingTab({ recruiters, db }: { recruiters: any[];
 
     // 1️⃣ Mettre à jour Firestore — recruteur
     const firestoreData = {
-      plan:             'pro',
-      planStatus:       'active',
-      planConfirmedAt:  now.toISOString(),
-      planActivatedAt:  now.toISOString(),
-      planExpiry:       expiry.toISOString().split('T')[0],
-      planBilling:      billing,
-      planNote:         note || '',
-      planUpdatedAt:    now.toISOString(),
+      plan:                  'pro',
+      planStatus:            'active',
+      planConfirmedAt:       now.toISOString(),
+      planActivatedAt:       now.toISOString(),
+      planExpiry:            expiry.toISOString().split('T')[0],
+      planBilling:           billing,
+      planNote:              note || '',
+      planConfirmationRef:   note || '',  // store the reference
+      planUpdatedAt:         now.toISOString(),
     };
     await updateDoc(doc(db, 'recruiters', rec.id), firestoreData);
 
