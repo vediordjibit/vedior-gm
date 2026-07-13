@@ -302,6 +302,7 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
   const [lang,setLang]=useState(langProp);
   const [billing,setBilling]=useState("monthly");
   const [method,setMethod]=useState("card");
+  const [paymentRef,setPaymentRef]=useState("");
   const [modal,setModal]=useState(false);
   const [copied,setCopied]=useState("");
   const [card,setCard]=useState({number:"",name:"",expiry:"",cvv:""});
