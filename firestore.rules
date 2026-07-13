@@ -109,17 +109,31 @@ service cloud.firestore {
     }
 
     // ── USERS ────────────────────────────────────────────────────────────────
-    // Contient les profils candidats. Avant : n'importe quel utilisateur connecté
-    // pouvait lire/modifier/supprimer le compte de n'importe qui — trou majeur.
-    // Maintenant : chacun gère son propre compte ; les recruteurs Pro actifs ont
-    // un accès complet en lecture ; les recruteurs Free peuvent lister (pas
-    // "get" individuel) jusqu'à freeApplicationsLimit profils à la fois.
+    // Contient les profils candidats (+ comptes recruteurs/admin créés par
+    // l'admin, qui utilisent 'users' aussi pour leur propre statut de plan).
+    // Avant : n'importe quel utilisateur connecté pouvait lire/modifier/
+    // supprimer le compte de n'importe qui — trou majeur.
+    //
+    // IMPORTANT : l'ID du document == uid SEULEMENT pour les comptes auto-
+    // inscrits (setDoc(doc(db,'users',uid))). Les comptes créés par l'admin
+    // (addDoc, ID aléatoire) n'ont PAS cette propriété — seul le champ
+    // `userId` ou `firebaseUid` vaut l'uid réel. Sans ce fallback, ces
+    // utilisateurs ne peuvent jamais modifier leur propre document (bug vécu
+    // en prod : le paiement CAC Pay d'un recruteur créé par l'admin
+    // n'apparaissait jamais côté admin, faute de pouvoir écrire son propre
+    // statut "pending_confirmation").
+    function isUsersDocOwner(docId, data) {
+      return uid() == docId
+          || data.get('userId', null) == uid()
+          || data.get('firebaseUid', null) == uid();
+    }
+
     match /users/{userId} {
-      allow get:    if isAuth() && (isAdminUser() || uid() == userId || isProActiveUser());
+      allow get:    if isAuth() && (isAdminUser() || isUsersDocOwner(userId, resource.data) || isProActiveUser());
       allow list:   if isAuth() && (isAdminUser() || isProActiveUser()
                      || (hasRecruiterLimits() && request.query.limit <= freeCandidateLimit()));
       allow create: if isAuth() && (isAdminUser() || uid() == userId);
-      allow update, delete: if isAuth() && (isAdminUser() || uid() == userId);
+      allow update, delete: if isAuth() && (isAdminUser() || isUsersDocOwner(userId, resource.data));
     }
 
     // ── ADMINS ───────────────────────────────────────────────────────────────
@@ -189,6 +203,14 @@ service cloud.firestore {
     // `recruiterLimits`. Verrouillée à l'admin par précaution.
     match /subscriptions/{subId} {
       allow read, write: if isAdminUser();
+    }
+
+    // ── RATE LIMITS (anti-abus) ──────────────────────────────────────────────
+    // Écrit/lu uniquement par les Cloud Functions via Admin SDK (contourne ces
+    // règles). Jamais accessible côté client, admin inclus — évite toute fuite
+    // sur les tentatives de reset de mot de passe d'un tiers.
+    match /rateLimits/{id} {
+      allow read, write: if false;
     }
 
     // ── INVOICES (factures PDF) ─────────────────────────────────────────────

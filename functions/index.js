@@ -14,6 +14,12 @@
  *                             par email (pièce jointe) via Resend.
  * 5) downloadInvoice       : callable — génère (ou régénère) le PDF d'une facture
  *                             à la demande et le renvoie en base64 au client.
+ * 6) requestPasswordReset  : callable PUBLIQUE — génère un lien de reset via
+ *                             Admin SDK et l'envoie via Resend (remplace l'email
+ *                             natif Firebase). Anti-énumération + rate-limit.
+ * 7) sendVerificationEmail : callable authentifiée — génère un lien de
+ *                             vérification d'email via Admin SDK et l'envoie
+ *                             via Resend (remplace sendEmailVerification natif).
  *
  * Déploiement :
  *   cd functions && npm install
@@ -518,4 +524,155 @@ exports.downloadInvoice = functions
       filename: `${invoiceData.invoiceNumber}.pdf`,
       pdfBase64: buffer.toString("base64"),
     };
+  });
+
+// ─────────────────────────────────────────────────────────────
+// Template email — mot de passe oublié / vérification d'email.
+// Même charte que les templates de bienvenue (route.ts) : navy #0A192F,
+// accent #00A3E0.
+// ─────────────────────────────────────────────────────────────
+function actionEmailHTML({ title, intro, buttonLabel, actionLink, footerNote }) {
+  return `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#F1F5F9;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#F1F5F9;padding:40px 0;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+        <tr><td style="background:#0A192F;padding:36px 48px;text-align:center;">
+          <div style="font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.5px;">VEDIOR GM</div>
+          <div style="font-size:10px;color:rgba(255,255,255,0.4);letter-spacing:3px;text-transform:uppercase;margin-top:4px;">Recrutement · Djibouti</div>
+          <div style="width:40px;height:3px;background:#00A3E0;border-radius:2px;margin:16px auto 0;"></div>
+        </td></tr>
+        <tr><td style="padding:48px;">
+          <h1 style="font-size:22px;font-weight:800;color:#0A192F;margin:0 0 16px;letter-spacing:-0.5px;">${title}</h1>
+          <p style="font-size:14px;color:#64748B;line-height:1.7;margin:0 0 32px;">${intro}</p>
+          <div style="text-align:center;margin-bottom:32px;">
+            <a href="${actionLink}" style="display:inline-block;background:#00A3E0;color:#ffffff;text-decoration:none;padding:16px 40px;border-radius:12px;font-weight:800;font-size:14px;letter-spacing:0.5px;">
+              ${buttonLabel} →
+            </a>
+          </div>
+          <p style="font-size:12px;color:#94A3B8;text-align:center;margin:0;">${footerNote}</p>
+        </td></tr>
+        <tr><td style="background:#F8FAFC;padding:24px 48px;border-top:1px solid #E2E8F0;">
+          <p style="font-size:12px;color:#94A3B8;margin:0;text-align:center;">© 2026 Vedior GM · Recrutement à Djibouti</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Anti-abus simple : max 3 demandes / 15 min par clé (email ou uid).
+// Évite le spam sans infra supplémentaire (App Check).
+// ─────────────────────────────────────────────────────────────
+async function checkRateLimit(key, maxAttempts, windowMs) {
+  const ref = db.collection("rateLimits").doc(key);
+  const now = Date.now();
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const data = snap.exists ? snap.data() : { attempts: [] };
+    const recent = (data.attempts || []).filter((t) => now - t < windowMs);
+    if (recent.length >= maxAttempts) return false;
+    recent.push(now);
+    tx.set(ref, { attempts: recent, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    return true;
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// 6) Mot de passe oublié — callable PUBLIQUE (pas de context.auth requis,
+//    l'utilisateur n'est par définition pas connecté à ce stade). Génère le
+//    lien via Admin SDK (ne déclenche PAS l'email natif Firebase) et l'envoie
+//    via Resend. Ne révèle JAMAIS si l'email existe ou non (anti-énumération) :
+//    retourne toujours { success: true }, sauf en cas de rate-limit.
+// ─────────────────────────────────────────────────────────────
+exports.requestPasswordReset = functions
+  .region("europe-west1")
+  .runWith({ secrets: ["RESEND_API_KEY"] })
+  .https.onCall(async (data) => {
+    const email = (data && data.email || "").trim().toLowerCase();
+    if (!email || !email.includes("@")) {
+      throw new functions.https.HttpsError("invalid-argument", "Email invalide.");
+    }
+
+    const ok = await checkRateLimit(`pwreset_${email}`, 3, 15 * 60 * 1000);
+    if (!ok) {
+      throw new functions.https.HttpsError("resource-exhausted", "Trop de tentatives. Réessayez dans 15 minutes.");
+    }
+
+    try {
+      const link = await admin.auth().generatePasswordResetLink(email, {
+        url: "https://vediorgm.com/login",
+        handleCodeInApp: false,
+      });
+      const resend = new Resend(process.env.RESEND_API_KEY);
+      await resend.emails.send({
+        from: "Vedior GM <noreply@vediorgm.com>",
+        replyTo: "vediordjib.it@gmail.com",
+        to: email,
+        subject: "Réinitialisation de votre mot de passe — Vedior GM",
+        html: actionEmailHTML({
+          title: "Réinitialisez votre mot de passe",
+          intro: "Vous avez demandé à réinitialiser votre mot de passe Vedior GM. Cliquez sur le bouton ci-dessous pour en choisir un nouveau.",
+          buttonLabel: "Réinitialiser mon mot de passe",
+          actionLink: link,
+          footerNote: "Ce lien est valable 1 heure. Si vous n'êtes pas à l'origine de cette demande, ignorez cet email — votre mot de passe reste inchangé.",
+        }),
+      });
+    } catch (err) {
+      // auth/user-not-found ou autre : on ne le révèle jamais au client.
+      console.warn("requestPasswordReset: échec silencieux pour", email, err.code || err.message);
+    }
+
+    return { success: true };
+  });
+
+// ─────────────────────────────────────────────────────────────
+// 7) Vérification d'email — callable AUTHENTIFIÉE (appelée par le candidat
+//    juste après son inscription). Génère le lien via Admin SDK et l'envoie
+//    via Resend (au lieu de l'email natif Firebase).
+// ─────────────────────────────────────────────────────────────
+exports.sendVerificationEmail = functions
+  .region("europe-west1")
+  .runWith({ secrets: ["RESEND_API_KEY"] })
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError("unauthenticated", "Connexion requise.");
+    }
+    const userRecord = await admin.auth().getUser(context.auth.uid);
+    if (!userRecord.email) {
+      throw new functions.https.HttpsError("failed-precondition", "Aucun email associé à ce compte.");
+    }
+    if (userRecord.emailVerified) {
+      return { success: true, alreadyVerified: true };
+    }
+
+    const ok = await checkRateLimit(`verify_${context.auth.uid}`, 3, 15 * 60 * 1000);
+    if (!ok) {
+      throw new functions.https.HttpsError("resource-exhausted", "Trop de tentatives. Réessayez dans 15 minutes.");
+    }
+
+    const link = await admin.auth().generateEmailVerificationLink(userRecord.email, {
+      url: "https://vediorgm.com/candidate",
+      handleCodeInApp: false,
+    });
+    const resend = new Resend(process.env.RESEND_API_KEY);
+    await resend.emails.send({
+      from: "Vedior GM <noreply@vediorgm.com>",
+      replyTo: "vediordjib.it@gmail.com",
+      to: userRecord.email,
+      subject: "Vérifiez votre adresse email — Vedior GM",
+      html: actionEmailHTML({
+        title: "Vérifiez votre adresse email",
+        intro: "Bienvenue sur Vedior GM ! Confirmez votre adresse email pour activer pleinement votre compte candidat.",
+        buttonLabel: "Vérifier mon email",
+        actionLink: link,
+        footerNote: "Ce lien est valable 24 heures. Si vous n'avez pas créé ce compte, ignorez cet email.",
+      }),
+    });
+
+    return { success: true };
   });

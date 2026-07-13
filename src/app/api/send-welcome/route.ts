@@ -145,6 +145,67 @@ function candidateEmailHTML(data: { fullName: string; phone: string; tempPasswor
 </html>`;
 }
 
+// ── Template email Admin ──────────────────────────────────────────────────────
+function adminEmailHTML(data: { contactName: string; email: string; resetLink: string }) {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Compte administrateur Vedior GM</title>
+</head>
+<body style="margin:0;padding:0;background:#F1F5F9;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#F1F5F9;padding:40px 0;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+        <tr>
+          <td style="background:#0A192F;padding:36px 48px;text-align:center;">
+            <div style="font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.5px;">VEDIOR GM</div>
+            <div style="font-size:10px;color:rgba(255,255,255,0.4);letter-spacing:3px;text-transform:uppercase;margin-top:4px;">Recrutement · Djibouti</div>
+            <div style="width:40px;height:3px;background:#00A3E0;border-radius:2px;margin:16px auto 0;"></div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:48px;">
+            <p style="font-size:13px;color:#64748B;margin:0 0 8px;">Bonjour <strong style="color:#0A192F;">${data.contactName}</strong>,</p>
+            <h1 style="font-size:24px;font-weight:800;color:#0A192F;margin:0 0 16px;letter-spacing:-0.5px;">Votre compte administrateur est créé 🔐</h1>
+            <p style="font-size:14px;color:#64748B;line-height:1.7;margin:0 0 24px;">
+              Un compte avec accès administrateur à la plateforme Vedior GM a été créé pour vous.<br>
+              Pour l'activer, définissez votre mot de passe en cliquant sur le bouton ci-dessous.
+            </p>
+            <div style="background:#F8FAFC;border:1px solid #E2E8F0;border-left:4px solid #00A3E0;border-radius:10px;padding:20px 24px;margin-bottom:32px;">
+              <div style="font-size:11px;font-weight:700;color:#00A3E0;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">Vos identifiants de connexion</div>
+              <div style="font-size:14px;color:#0A192F;line-height:1.8;">
+                <span style="color:#64748B;">Email :</span> <strong>${data.email}</strong><br>
+                <span style="color:#64748B;">Mot de passe :</span> <strong>À définir via le lien ci-dessous</strong>
+              </div>
+            </div>
+            <div style="text-align:center;margin-bottom:32px;">
+              <a href="${data.resetLink}" style="display:inline-block;background:#00A3E0;color:#ffffff;text-decoration:none;padding:16px 40px;border-radius:12px;font-weight:800;font-size:14px;letter-spacing:0.5px;">
+                Définir mon mot de passe →
+              </a>
+            </div>
+            <p style="font-size:12px;color:#94A3B8;text-align:center;margin:0;">
+              Ce lien est valable 24 heures. Cet accès donne des droits étendus sur la plateforme — ne le partagez avec personne.
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="background:#F8FAFC;padding:24px 48px;border-top:1px solid #E2E8F0;">
+            <p style="font-size:12px;color:#94A3B8;margin:0;text-align:center;">
+              © 2025 Vedior GM · Recrutement à Djibouti<br>
+              <a href="https://vediorgm.com" style="color:#00A3E0;text-decoration:none;">vediorgm.com</a>
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
 // ── Handler POST ──────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   try {
@@ -216,6 +277,40 @@ export async function POST(req: NextRequest) {
 
       if (error) {
         console.error('[send-welcome] Resend error (candidate):', error);
+        return NextResponse.json({ error }, { status: 400 });
+      }
+      return NextResponse.json({ success: true });
+
+    // ── Admin ──
+    } else if (type === 'admin') {
+      const { contactName, email } = data;
+
+      if (!email) return NextResponse.json({ error: 'Email manquant' }, { status: 400 });
+
+      let resetLink = ACTION_URL;
+      if (adminAuth) {
+        try {
+          resetLink = await adminAuth.generatePasswordResetLink(email, {
+            url: ACTION_URL,
+            handleCodeInApp: false,
+          });
+        } catch (linkErr: any) {
+          console.error('[send-welcome] generatePasswordResetLink échoué (admin):', linkErr.message);
+        }
+      } else {
+        console.warn('[send-welcome] adminAuth non disponible — lien reset générique utilisé (admin)');
+      }
+
+      const { error } = await resend.emails.send({
+        from: 'Vedior GM <noreply@vediorgm.com>',
+        replyTo: 'vediordjib.it@gmail.com',
+        to: email,
+        subject: 'Votre compte administrateur Vedior GM est prêt',
+        html: adminEmailHTML({ contactName, email, resetLink }),
+      });
+
+      if (error) {
+        console.error('[send-welcome] Resend error (admin):', error);
         return NextResponse.json({ error }, { status: 400 });
       }
       return NextResponse.json({ success: true });
