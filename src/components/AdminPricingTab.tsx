@@ -386,7 +386,7 @@ function TarifsEditor({ config, onSave }: { config: PricingConfig; onSave: (c: P
 // (génère si besoin, région europe-west1) et déclenche le téléchargement
 // navigateur à partir du PDF renvoyé en base64.
 // ─────────────────────────────────────────────
-async function downloadInvoicePdf(db: any, paymentId: string) {
+async function fetchInvoicePdfBlob(db: any, paymentId: string) {
   const fns = getFunctions(db.app, 'europe-west1');
   const call = httpsCallable(fns, 'downloadInvoice');
   const res: any = await call({ paymentId });
@@ -396,50 +396,82 @@ async function downloadInvoicePdf(db: any, paymentId: string) {
   const bytes = new Uint8Array(byteChars.length);
   for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
   const blob = new Blob([bytes], { type: 'application/pdf' });
+  return { blob, filename: filename || 'facture.pdf' };
+}
 
+async function downloadInvoicePdf(db: any, paymentId: string) {
+  const { blob, filename } = await fetchInvoicePdfBlob(db, paymentId);
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename || 'facture.pdf';
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
 }
 
+// Ouvre le PDF dans un nouvel onglet pour visualisation (pas de téléchargement
+// forcé) — l'utilisateur peut ensuite l'enregistrer depuis le viewer du navigateur.
+async function previewInvoicePdf(db: any, paymentId: string) {
+  const { blob } = await fetchInvoicePdfBlob(db, paymentId);
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+  // Révoqué après un délai pour laisser le temps à l'onglet de charger le blob.
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
 function InvoiceButton({ db, paymentId }: { db: any; paymentId: string }) {
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState<'download' | 'preview' | null>(null);
   const [error, setError] = useState(false);
 
-  const handleClick = async () => {
-    setLoading(true);
+  const run = async (mode: 'download' | 'preview') => {
+    setLoading(mode);
     setError(false);
     try {
-      await downloadInvoicePdf(db, paymentId);
+      if (mode === 'download') await downloadInvoicePdf(db, paymentId);
+      else await previewInvoicePdf(db, paymentId);
     } catch (e) {
       console.error('downloadInvoice failed:', e);
       setError(true);
       setTimeout(() => setError(false), 3000);
     } finally {
-      setLoading(false);
+      setLoading(null);
     }
   };
 
+  if (error) {
+    return (
+      <button
+        onClick={() => run('download')}
+        className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-wide bg-red-50 text-red-600"
+      >
+        <AlertCircle size={12} /> Erreur
+      </button>
+    );
+  }
+
   return (
-    <button
-      onClick={handleClick}
-      disabled={loading}
-      className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-wide transition-all disabled:opacity-50 ${
-        error ? 'bg-red-50 text-red-600' : 'bg-gray-100 text-gray-700 hover:bg-navy hover:text-white'
-      }`}
-    >
-      {loading
-        ? <RefreshCw size={12} className="animate-spin" />
-        : error
-        ? <><AlertCircle size={12} /> Erreur</>
-        : <><Download size={12} /> Facture</>
-      }
-    </button>
+    <div className="flex items-center gap-1.5">
+      <button
+        onClick={() => run('preview')}
+        disabled={loading !== null}
+        title="Aperçu"
+        className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-wide transition-all disabled:opacity-50 bg-gray-100 text-gray-700 hover:bg-navy hover:text-white"
+      >
+        {loading === 'preview' ? <RefreshCw size={12} className="animate-spin" /> : <Eye size={12} />}
+        Aperçu
+      </button>
+      <button
+        onClick={() => run('download')}
+        disabled={loading !== null}
+        title="Télécharger"
+        className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-wide transition-all disabled:opacity-50 bg-gray-100 text-gray-700 hover:bg-navy hover:text-white"
+      >
+        {loading === 'download' ? <RefreshCw size={12} className="animate-spin" /> : <Download size={12} />}
+        Facture
+      </button>
+    </div>
   );
 }
 

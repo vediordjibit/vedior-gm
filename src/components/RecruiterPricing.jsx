@@ -235,25 +235,46 @@ function MyInvoices({ lang }) {
     return unsub;
   }, []);
 
+  const fetchInvoiceBlob = async (paymentId) => {
+    const fns = getFunctions(db.app, 'europe-west1');
+    const call = httpsCallable(fns, 'downloadInvoice');
+    const res = await call({ paymentId });
+    const { pdfBase64, filename } = res.data;
+    const byteChars = atob(pdfBase64);
+    const bytes = new Uint8Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+    return { blob: new Blob([bytes], { type: 'application/pdf' }), filename: filename || 'facture.pdf' };
+  };
+
   const downloadInvoice = async (paymentId) => {
-    setBusyId(paymentId);
+    setBusyId(paymentId + ':download');
     setErrorId(null);
     try {
-      const fns = getFunctions(db.app, 'europe-west1');
-      const call = httpsCallable(fns, 'downloadInvoice');
-      const res = await call({ paymentId });
-      const { pdfBase64, filename } = res.data;
-      const byteChars = atob(pdfBase64);
-      const bytes = new Uint8Array(byteChars.length);
-      for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
-      const blob = new Blob([bytes], { type: 'application/pdf' });
+      const { blob, filename } = await fetchInvoiceBlob(paymentId);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url; a.download = filename || 'facture.pdf';
+      a.href = url; a.download = filename;
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
     } catch (e) {
       console.error('downloadInvoice failed:', e);
+      setErrorId(paymentId);
+      setTimeout(() => setErrorId(null), 3000);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const previewInvoice = async (paymentId) => {
+    setBusyId(paymentId + ':preview');
+    setErrorId(null);
+    try {
+      const { blob } = await fetchInvoiceBlob(paymentId);
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) {
+      console.error('previewInvoice failed:', e);
       setErrorId(paymentId);
       setTimeout(() => setErrorId(null), 3000);
     } finally {
@@ -282,23 +303,40 @@ function MyInvoices({ lang }) {
                 {p.createdAt?.toDate?.()?.toLocaleDateString('fr-FR') || '—'} · {Number(p.amount || 0).toLocaleString('fr-FR')} FDJ
               </p>
             </div>
-            <button
-              onClick={() => downloadInvoice(p.id)}
-              disabled={busyId === p.id}
-              style={{
-                padding:"8px 16px", borderRadius:10, border:"none",
-                background: errorId === p.id ? "rgba(239,68,68,0.15)" : "rgba(59,130,246,0.15)",
-                color: errorId === p.id ? "#f87171" : "#60a5fa",
-                fontSize:11, fontWeight:900, textTransform:"uppercase", letterSpacing:"0.5px",
-                cursor: busyId === p.id ? "wait" : "pointer", opacity: busyId === p.id ? 0.6 : 1,
-              }}>
-              {busyId === p.id
-                ? (lang==='FR'?'Génération...':'Generating...')
-                : errorId === p.id
-                ? (lang==='FR'?'Erreur':'Error')
-                : (lang==='FR'?'⬇ Télécharger':'⬇ Download')
-              }
-            </button>
+            <div style={{display:"flex",gap:8}}>
+              <button
+                onClick={() => previewInvoice(p.id)}
+                disabled={busyId === p.id + ':preview' || busyId === p.id + ':download'}
+                style={{
+                  padding:"8px 16px", borderRadius:10, border:"none",
+                  background:"rgba(255,255,255,0.06)",
+                  color:"rgba(255,255,255,0.7)",
+                  fontSize:11, fontWeight:900, textTransform:"uppercase", letterSpacing:"0.5px",
+                  cursor: busyId ? "wait" : "pointer", opacity: busyId ? 0.6 : 1,
+                }}>
+                {busyId === p.id + ':preview'
+                  ? (lang==='FR'?'Chargement...':'Loading...')
+                  : (lang==='FR'?'👁 Aperçu':'👁 Preview')
+                }
+              </button>
+              <button
+                onClick={() => downloadInvoice(p.id)}
+                disabled={busyId === p.id + ':download' || busyId === p.id + ':preview'}
+                style={{
+                  padding:"8px 16px", borderRadius:10, border:"none",
+                  background: errorId === p.id ? "rgba(239,68,68,0.15)" : "rgba(59,130,246,0.15)",
+                  color: errorId === p.id ? "#f87171" : "#60a5fa",
+                  fontSize:11, fontWeight:900, textTransform:"uppercase", letterSpacing:"0.5px",
+                  cursor: busyId ? "wait" : "pointer", opacity: busyId ? 0.6 : 1,
+                }}>
+                {busyId === p.id + ':download'
+                  ? (lang==='FR'?'Génération...':'Generating...')
+                  : errorId === p.id
+                  ? (lang==='FR'?'Erreur':'Error')
+                  : (lang==='FR'?'⬇ Télécharger':'⬇ Download')
+                }
+              </button>
+            </div>
           </div>
         ))}
       </div>

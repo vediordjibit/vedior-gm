@@ -21,11 +21,24 @@
  */
 
 const functions = require("firebase-functions/v1");
+const { onDocumentWritten } = require("firebase-functions/v2/firestore");
 const admin = require("firebase-admin");
 const PDFDocument = require("pdfkit");
 const { Resend } = require("resend");
 admin.initializeApp();
 const db = admin.firestore();
+
+// Logo bundlé avec la fonction (functions/assets/logo.png). Chargé une seule
+// fois au cold start ; si le fichier est absent, le nom légal sera affiché
+// en texte à la place (voir renderInvoicePdfBuffer).
+const path = require("path");
+const fs = require("fs");
+let LOGO_BUFFER = null;
+try {
+  LOGO_BUFFER = fs.readFileSync(path.join(__dirname, "assets", "logo.png"));
+} catch (e) {
+  console.warn("Logo introuvable (functions/assets/logo.png) — la facture utilisera le texte à la place.");
+}
 
 const STATUSES_NOT_ACTIVE = ["archived", "expired", "draft"];
 
@@ -151,30 +164,31 @@ exports.expireSubscriptions = functions
 // 2) Synchro du miroir recruiterLimits quand un recruteur change
 //    (activation, révocation, changement de plan, etc.)
 // ─────────────────────────────────────────────────────────────
-exports.syncRecruiterLimits = functions
-  .region("europe-west1")
-  .firestore.document("recruiters/{recruiterId}")
-  .onWrite(async (change, context) => {
+exports.syncRecruiterLimits = onDocumentWritten(
+  { document: "recruiters/{recruiterId}", region: "europe-west1" },
+  async (event) => {
+    const change = event.data;
     const data = change.after.exists ? change.after.data() : null;
     if (!data) return null; // suppression du recruteur : on laisse le miroir tel quel
 
     const uid = await resolveUid(data);
     if (!uid) {
-      console.warn(`syncRecruiterLimits: uid introuvable pour recruteur ${context.params.recruiterId}`);
+      console.warn(`syncRecruiterLimits: uid introuvable pour recruteur ${event.params.recruiterId}`);
       return null;
     }
-    await rebuildRecruiterLimits(uid, context.params.recruiterId);
+    await rebuildRecruiterLimits(uid, event.params.recruiterId);
     return null;
-  });
+  }
+);
 
 // ─────────────────────────────────────────────────────────────
 // 3) Synchro du compteur d'offres actives quand une offre est créée,
 //    modifiée (changement de statut) ou supprimée.
 // ─────────────────────────────────────────────────────────────
-exports.syncActiveJobsCount = functions
-  .region("europe-west1")
-  .firestore.document("needs/{needId}")
-  .onWrite(async (change) => {
+exports.syncActiveJobsCount = onDocumentWritten(
+  { document: "needs/{needId}", region: "europe-west1" },
+  async (event) => {
+    const change = event.data;
     const before = change.before.exists ? change.before.data() : null;
     const after = change.after.exists ? change.after.data() : null;
     const uid = (after && after.userId) || (before && before.userId);
@@ -182,7 +196,8 @@ exports.syncActiveJobsCount = functions
 
     await rebuildRecruiterLimits(uid, null);
     return null;
-  });
+  }
+);
 
 // ─────────────────────────────────────────────────────────────
 // 4) Backfill manuel (à lancer une fois après le déploiement, ou via
@@ -234,66 +249,131 @@ async function getNextInvoiceNumber(year) {
   return `FACT-${year}-${String(seq).padStart(4, "0")}`;
 }
 
+// Formate un montant en FDJ avec un espace normal comme séparateur de
+// milliers (toLocaleString('fr-FR') utilise un espace insécable étroit
+// que la police Helvetica de PDFKit n'affiche pas correctement).
+function fmtAmount(n) {
+  const s = Math.round(Number(n) || 0).toString();
+  return s.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+
 // Génère le buffer PDF de la facture à partir des données stockées dans
 // invoices/{id}. Régénérable à l'identique à tout moment (pas de fichier
 // persistant sur Storage — tout repart des données Firestore).
 function renderInvoicePdfBuffer(inv) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: "A4", margin: 50 });
+    const doc = new PDFDocument({ size: "A4", margin: 0 });
     const chunks = [];
     doc.on("data", (c) => chunks.push(c));
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
 
     const c = inv.companySnapshot || {};
+    const NAVY = "#0A192F";
+    const BLUE = "#00A3E0";
+    const GRAY = "#64748B";
+    const LIGHT = "#94A3B8";
+    const BORDER = "#E2E8F0";
+    const BG = "#F8FAFC";
+    const PAGE_W = 595.28;
+    const ML = 50;
+    const MR = 545;
+
+    // ── Bandeau supérieur ──
+    doc.rect(0, 0, PAGE_W, 8).fill(BLUE);
+
+    let cursorY = 45;
+
+    // ── Logo (fichier bundlé : functions/assets/logo.png) ──
+    let logoBottomY = cursorY;
+    if (LOGO_BUFFER) {
+      try {
+        doc.image(LOGO_BUFFER, ML, cursorY, { fit: [150, 55] });
+        logoBottomY = cursorY + 58;
+      } catch (e) {
+        doc.fontSize(19).fillColor(NAVY).font("Helvetica-Bold").text(c.legalName || c.name || "Vedior GM", ML, cursorY, { width: 260 });
+        logoBottomY = doc.y + 4;
+      }
+    } else {
+      doc.fontSize(19).fillColor(NAVY).font("Helvetica-Bold").text(c.legalName || c.name || "Vedior GM", ML, cursorY, { width: 260 });
+      logoBottomY = doc.y + 4;
+    }
 
     // ── En-tête société ──
-    doc.fontSize(20).fillColor("#0A192F").font("Helvetica-Bold").text(c.legalName || c.name || "Vedior GM");
-    doc.fontSize(9).fillColor("#64748B").font("Helvetica")
-      .text(c.address || "")
-      .text([c.phone, c.email].filter(Boolean).join(" · "))
-      .text([c.rccm, c.nif].filter(Boolean).join("  ·  "));
+    doc.fontSize(10).fillColor(NAVY).font("Helvetica-Bold")
+      .text(c.legalName || c.name || "Vedior GM SARL", ML, logoBottomY, { width: 260 });
+    doc.fontSize(9).fillColor(GRAY).font("Helvetica")
+      .text(c.address || "", ML, doc.y + 3, { width: 260 })
+      .text([c.phone, c.email].filter(Boolean).join("  ·  "), ML, doc.y + 2, { width: 260 });
+    if (c.rccm || c.nif) {
+      doc.fontSize(8).fillColor(LIGHT)
+        .text([c.rccm ? `RCCM ${c.rccm}` : "", c.nif ? `NIF ${c.nif}` : ""].filter(Boolean).join("   ·   "), ML, doc.y + 2, { width: 260 });
+    }
 
-    doc.moveDown(1.5);
-    doc.fontSize(18).fillColor("#0A192F").font("Helvetica-Bold").text("FACTURE", { align: "right" });
-    doc.fontSize(10).fillColor("#64748B").font("Helvetica")
-      .text(inv.invoiceNumber, { align: "right" })
-      .text(`Date d'émission : ${inv.issueDate}`, { align: "right" });
-    if (inv.periodEnd) doc.text(`Échéance abonnement : ${inv.periodEnd}`, { align: "right" });
+    // ── Bloc FACTURE (droite) ──
+    doc.fontSize(24).fillColor(NAVY).font("Helvetica-Bold")
+      .text("FACTURE", ML, cursorY, { width: MR - ML, align: "right" });
+    doc.fontSize(10).fillColor(BLUE).font("Helvetica-Bold")
+      .text(inv.invoiceNumber, ML, doc.y + 4, { width: MR - ML, align: "right" });
+    doc.fontSize(9).fillColor(GRAY).font("Helvetica")
+      .text(`Date d'émission : ${inv.issueDate}`, ML, doc.y + 6, { width: MR - ML, align: "right" });
+    if (inv.periodEnd) {
+      doc.text(`Échéance abonnement : ${inv.periodEnd}`, ML, doc.y + 2, { width: MR - ML, align: "right" });
+    }
 
-    doc.moveDown(1.5);
-    doc.moveTo(50, doc.y).lineTo(545, doc.y).strokeColor("#E2E8F0").stroke();
-    doc.moveDown(1);
+    // ── Statut payé ──
+    const badgeY = doc.y + 10;
+    const badgeText = "PAYÉE";
+    doc.fontSize(9).font("Helvetica-Bold");
+    const badgeW = doc.widthOfString(badgeText) + 20;
+    doc.roundedRect(MR - badgeW, badgeY, badgeW, 20, 10).fill("#E7F8EF");
+    doc.fillColor("#0F9D58").text(badgeText, MR - badgeW, badgeY + 5, { width: badgeW, align: "center" });
+
+    cursorY = Math.max(cursorY + 130, badgeY + 40);
+
+    // ── Séparateur ──
+    doc.moveTo(ML, cursorY).lineTo(MR, cursorY).strokeColor(BORDER).lineWidth(1).stroke();
+    cursorY += 25;
 
     // ── Facturé à ──
-    doc.fontSize(9).fillColor("#94A3B8").font("Helvetica-Bold").text("FACTURÉ À");
-    doc.fontSize(11).fillColor("#0A192F").font("Helvetica-Bold").text(inv.companyNameClient || inv.recruiterName || "Client");
-    doc.fontSize(9).fillColor("#64748B").font("Helvetica").text(inv.recruiterEmail || "");
+    doc.fontSize(8).fillColor(LIGHT).font("Helvetica-Bold").text("FACTURÉ À", ML, cursorY, { characterSpacing: 0.5 });
+    doc.fontSize(12).fillColor(NAVY).font("Helvetica-Bold")
+      .text(inv.companyNameClient || inv.recruiterName || "Client", ML, doc.y + 4);
+    doc.fontSize(9).fillColor(GRAY).font("Helvetica").text(inv.recruiterEmail || "", ML, doc.y + 2);
 
-    doc.moveDown(2);
+    cursorY = doc.y + 30;
 
-    // ── Tableau ligne unique ──
-    const tableTop = doc.y;
-    doc.fontSize(9).fillColor("#94A3B8").font("Helvetica-Bold");
-    doc.text("DESCRIPTION", 50, tableTop);
-    doc.text("MONTANT", 450, tableTop, { width: 95, align: "right" });
-    doc.moveTo(50, tableTop + 15).lineTo(545, tableTop + 15).strokeColor("#E2E8F0").stroke();
+    // ── Tableau ──
+    const tableTop = cursorY;
+    doc.rect(ML, tableTop, MR - ML, 26).fill(NAVY);
+    doc.fontSize(9).fillColor("#FFFFFF").font("Helvetica-Bold");
+    doc.text("DESCRIPTION", ML + 15, tableTop + 8);
+    doc.text("MONTANT", ML, tableTop + 8, { width: MR - ML - 15, align: "right" });
 
-    const rowY = tableTop + 25;
-    doc.fontSize(10).fillColor("#0A192F").font("Helvetica").text(BILLING_LABEL[inv.billing] || "Abonnement Pro", 50, rowY, { width: 380 });
-    doc.font("Helvetica-Bold").text(`${Number(inv.amount).toLocaleString("fr-FR")} FDJ`, 450, rowY, { width: 95, align: "right" });
+    const rowY = tableTop + 26;
+    const rowH = 40;
+    doc.rect(ML, rowY, MR - ML, rowH).fill(BG);
+    doc.fontSize(10).fillColor(NAVY).font("Helvetica")
+      .text(BILLING_LABEL[inv.billing] || "Abonnement Pro", ML + 15, rowY + 14, { width: 320 });
+    doc.font("Helvetica-Bold").fontSize(11)
+      .text(`${fmtAmount(inv.amount)} FDJ`, ML, rowY + 13, { width: MR - ML - 15, align: "right" });
 
-    doc.moveTo(50, rowY + 25).lineTo(545, rowY + 25).strokeColor("#E2E8F0").stroke();
+    doc.rect(ML, tableTop, MR - ML, rowY + rowH - tableTop).strokeColor(BORDER).lineWidth(1).stroke();
 
     // ── Total ──
-    const totalY = rowY + 40;
-    doc.fontSize(11).fillColor("#0A192F").font("Helvetica-Bold").text("TOTAL", 350, totalY, { width: 100, align: "right" });
-    doc.fontSize(14).fillColor("#00A3E0").text(`${Number(inv.amount).toLocaleString("fr-FR")} FDJ`, 450, totalY - 2, { width: 95, align: "right" });
+    const totalY = rowY + rowH + 20;
+    doc.moveTo(ML + 280, totalY).lineTo(MR, totalY).strokeColor(BORDER).stroke();
+    doc.fontSize(11).fillColor(GRAY).font("Helvetica-Bold")
+      .text("TOTAL PAYÉ", ML + 280, totalY + 12, { width: 120 });
+    doc.fontSize(18).fillColor(BLUE).font("Helvetica-Bold")
+      .text(`${fmtAmount(inv.amount)} FDJ`, ML, totalY + 10, { width: MR - ML - 15, align: "right" });
 
     // ── Pied de page ──
-    doc.fontSize(8).fillColor("#94A3B8").font("Helvetica")
-      .text("Merci de votre confiance.", 50, 720, { align: "center", width: 495 })
-      .text(c.website || "", 50, 733, { align: "center", width: 495 });
+    doc.moveTo(ML, 740).lineTo(MR, 740).strokeColor(BORDER).stroke();
+    doc.fontSize(9).fillColor(NAVY).font("Helvetica-Bold")
+      .text("Merci de votre confiance.", ML, 752, { align: "center", width: MR - ML });
+    doc.fontSize(8).fillColor(LIGHT).font("Helvetica")
+      .text([c.website, c.email].filter(Boolean).join("   ·   "), ML, 767, { align: "center", width: MR - ML });
 
     doc.end();
   });
@@ -378,23 +458,23 @@ async function createInvoiceForPayment(paymentId, { sendEmail } = { sendEmail: f
 // 4) Trigger auto — génère + envoie la facture dès qu'un paiement
 //    passe au statut 'confirmed' (première confirmation uniquement).
 // ─────────────────────────────────────────────────────────────
-exports.onPaymentConfirmed = functions
-  .region("europe-west1")
-  .runWith({ secrets: ["RESEND_API_KEY"] })
-  .firestore.document("payments/{paymentId}")
-  .onWrite(async (change, context) => {
+exports.onPaymentConfirmed = onDocumentWritten(
+  { document: "payments/{paymentId}", region: "europe-west1", secrets: ["RESEND_API_KEY"] },
+  async (event) => {
+    const change = event.data;
     const before = change.before.exists ? change.before.data() : null;
     const after = change.after.exists ? change.after.data() : null;
     if (!after || after.status !== "confirmed") return null;
     if (before && before.status === "confirmed") return null; // déjà facturé, pas de doublon
 
     try {
-      await createInvoiceForPayment(context.params.paymentId, { sendEmail: true });
+      await createInvoiceForPayment(event.params.paymentId, { sendEmail: true });
     } catch (err) {
       console.error("onPaymentConfirmed: génération facture échouée:", err);
     }
     return null;
-  });
+  }
+);
 
 // ─────────────────────────────────────────────────────────────
 // 5) Téléchargement à la demande — génère (si besoin) puis renvoie le
