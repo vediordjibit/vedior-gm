@@ -176,30 +176,39 @@ async function updatePlanStatus(db, userUid, userEmail, data) {
     for (const field of ['userId', 'firebaseUid', 'uid']) {
       try {
         const snap = await getDocs(query(collection(db, col), where(field, '==', userUid)));
+        console.log(`[DEBUG] query ${col}.${field}==${userUid} -> ${snap.size} doc(s)`);
         if (!snap.empty) {
           await updateDoc(doc(db, col, snap.docs[0].id), data);
+          console.log(`[DEBUG] updateDoc ${col}/${snap.docs[0].id} SUCCESS`);
           updated = true;
           break;
         }
-      } catch (_) {}
+      } catch (err) {
+        console.error(`[DEBUG] FAILED on ${col}.${field}:`, err.code, err.message);
+      }
     }
   }
   if (!updated && userEmail) {
     for (const col of ['users', 'recruiters']) {
       try {
         const snap = await getDocs(query(collection(db, col), where('email', '==', userEmail)));
+        console.log(`[DEBUG] query ${col}.email==${userEmail} -> ${snap.size} doc(s)`);
         if (!snap.empty) {
           await updateDoc(doc(db, col, snap.docs[0].id), data);
+          console.log(`[DEBUG] updateDoc ${col}/${snap.docs[0].id} SUCCESS`);
           updated = true;
           break;
         }
-      } catch (_) {}
+      } catch (err) {
+        console.error(`[DEBUG] FAILED on ${col}.email:`, err.code, err.message);
+      }
     }
   }
   if (!updated) {
+    console.warn('[DEBUG] falling back to pendingPayments — nothing matched or all updates were rejected');
     await addDoc(collection(db, 'pendingPayments'), {
       ...data, userUid, userEmail, createdAt: new Date().toISOString(),
-    }).catch(() => {});
+    }).catch((err) => console.error('[DEBUG] pendingPayments fallback FAILED:', err.code, err.message));
   }
 }
 
