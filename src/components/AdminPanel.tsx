@@ -151,13 +151,6 @@ function MsgReplyBlock({ msg, db }: { msg: any; db: any }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────
-// 🧪 MODE TEST — mettre false pour désactiver avant le lancement
-const TEST_MODE = true;
-const TEST_EMAIL    = 'nassert93@gmail.com';  // ← ton email admin
-const TEST_PASSWORD = 'TonMotDePasse123!';    // ← ton mot de passe admin
-// ─────────────────────────────────────────────────────────────
-
 export default function AdminPanel({ onBack }: AdminPanelProps) {
   const { lang, setLang, t, dir } = useTranslation();
 
@@ -2380,44 +2373,6 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
               {loginMode === 'login' && (
                 <form onSubmit={handleEmailLogin} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
 
-                  {/* ── Bannière TEST MODE ── */}
-                  {TEST_MODE && (
-                    <div style={{ background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.3)', borderRadius: 14, padding: '16px 18px', position: 'relative' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-                        <span style={{ fontSize: 15 }}>🧪</span>
-                        <span style={{ fontSize: 11, fontWeight: 900, color: 'rgba(234,179,8,0.9)', textTransform: 'uppercase', letterSpacing: '1.4px' }}>Mode Test — Identifiants Admin</span>
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(0,0,0,0.25)', borderRadius: 9, padding: '10px 14px' }}>
-                          <div>
-                            <span style={{ fontSize: 9, fontWeight: 800, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: 3 }}>Email</span>
-                            <span style={{ fontSize: 13, fontWeight: 700, color: 'rgba(255,255,255,0.85)', fontFamily: 'monospace' }}>{TEST_EMAIL}</span>
-                          </div>
-                          <button type="button"
-                            onClick={() => { setLoginEmail(TEST_EMAIL); }}
-                            style={{ background: 'rgba(234,179,8,0.15)', border: '1px solid rgba(234,179,8,0.3)', color: 'rgba(234,179,8,0.8)', borderRadius: 7, padding: '5px 10px', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}>
-                            Copier
-                          </button>
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(0,0,0,0.25)', borderRadius: 9, padding: '10px 14px' }}>
-                          <div>
-                            <span style={{ fontSize: 9, fontWeight: 800, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: '1px', display: 'block', marginBottom: 3 }}>Mot de passe</span>
-                            <span style={{ fontSize: 13, fontWeight: 700, color: 'rgba(255,255,255,0.85)', fontFamily: 'monospace' }}>{TEST_PASSWORD}</span>
-                          </div>
-                          <button type="button"
-                            onClick={() => { setLoginPassword(TEST_PASSWORD); }}
-                            style={{ background: 'rgba(234,179,8,0.15)', border: '1px solid rgba(234,179,8,0.3)', color: 'rgba(234,179,8,0.8)', borderRadius: 7, padding: '5px 10px', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}>
-                            Copier
-                          </button>
-                        </div>
-                        <button type="button"
-                          onClick={() => { setLoginEmail(TEST_EMAIL); setLoginPassword(TEST_PASSWORD); }}
-                          style={{ width: '100%', background: 'rgba(234,179,8,0.12)', border: '1px solid rgba(234,179,8,0.25)', color: 'rgba(234,179,8,0.9)', borderRadius: 9, padding: '9px', fontSize: 12, fontWeight: 900, cursor: 'pointer', marginTop: 2 }}>
-                          ⚡ Remplir automatiquement
-                        </button>
-                      </div>
-                    </div>
-                  )}
 
                   {/* Erreur */}
                   {loginError && (

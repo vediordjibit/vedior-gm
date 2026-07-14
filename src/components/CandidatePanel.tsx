@@ -156,13 +156,6 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deletingAccount, setDeletingAccount] = useState(false);
   // ── Login mode states
-  // ── 🔧 MODE TEST — mettre à false avant la mise en prod ──
-  const TEST_MODE = true;
-  const TEST_CREDENTIALS = [
-    { label: 'Candidat test', phone: '77000001', password: 'Test2025!' },
-    { label: 'Recruteur test', phone: '77000002', password: 'Test2025!' },
-  ];
-
   const [loginTab, setLoginTab] = useState<'google' | 'phone'>('phone');
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -1254,29 +1247,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                 <a href="mailto:contact@vediorgm.com" style={{ color: '#f97316', fontWeight: 700, textDecoration: 'none' }}>Contact Vedior GM</a>
               </p>
 
-              {/* ── BANNIÈRE TEST MODE — retirer avant prod ── */}
-              {TEST_MODE && (
-                <div style={{ marginTop: 20, background: 'rgba(234,179,8,0.12)', border: '1px solid rgba(234,179,8,0.3)', borderRadius: 14, padding: '14px 16px' }}>
-                  <p style={{ color: '#eab308', fontWeight: 900, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.15em', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    🧪 Comptes de test (visible temporairement)
-                  </p>
-                  {TEST_CREDENTIALS.map((c, i) => (
-                    <div key={i}
-                      onClick={() => { setLoginPhone(c.phone); setTempPassword(c.password); }}
-                      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', marginBottom: 6, background: 'rgba(234,179,8,0.08)', borderRadius: 10, cursor: 'pointer', border: '1px solid rgba(234,179,8,0.15)' }}
-                    >
-                      <span style={{ color: 'rgba(255,255,255,0.6)', fontSize: 11, fontWeight: 700 }}>{c.label}</span>
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <span style={{ background: 'rgba(255,255,255,0.08)', borderRadius: 6, padding: '2px 8px', color: '#eab308', fontSize: 11, fontFamily: 'monospace', fontWeight: 700 }}>📱 {c.phone}</span>
-                        <span style={{ background: 'rgba(255,255,255,0.08)', borderRadius: 6, padding: '2px 8px', color: '#eab308', fontSize: 11, fontFamily: 'monospace', fontWeight: 700 }}>🔑 {c.password}</span>
-                      </div>
-                    </div>
-                  ))}
-                  <p style={{ color: 'rgba(255,255,255,0.25)', fontSize: 10, marginTop: 8, fontStyle: 'italic' }}>
-                    Cliquer sur une ligne pour remplir automatiquement
-                  </p>
-                </div>
-              )}
+
             </div>
           )}
           {loginTab === 'google' && (
