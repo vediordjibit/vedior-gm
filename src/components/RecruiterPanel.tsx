@@ -1008,7 +1008,10 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                     <label style={labelStyle}>Email professionnel</label>
                     <div style={{ position: 'relative' }}>
                       <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 18 }}>✉</span>
-                      <input type="email" required value={authEmail} onChange={e => setAuthEmail(e.target.value)}
+                      <input type="email" required
+                        name="recruiter-email"
+                        autoComplete="username"
+                        value={authEmail} onChange={e => setAuthEmail(e.target.value)}
                         placeholder="vous@entreprise.com"
                         style={inputStyle}
                         onFocus={e => e.target.style.borderColor = O}
@@ -1025,7 +1028,10 @@ export default function RecruiterPanel({ onBack }: RecruiterPanelProps) {
                     </div>
                     <div style={{ position: 'relative' }}>
                       <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 18 }}>🔒</span>
-                      <input type={showPassword ? 'text' : 'password'} required value={authPassword} onChange={e => setAuthPassword(e.target.value)}
+                      <input type={showPassword ? 'text' : 'password'} required
+                        name="recruiter-password"
+                        autoComplete="current-password"
+                        value={authPassword} onChange={e => setAuthPassword(e.target.value)}
                         placeholder="••••••••••"
                         style={inputStyle}
                         onFocus={e => e.target.style.borderColor = O}

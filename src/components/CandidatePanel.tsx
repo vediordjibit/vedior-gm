@@ -1238,7 +1238,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                     <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 18, pointerEvents: 'none' }}>🔒</span>
                     <input id="loginPassword" name="loginPassword" type="password"
                       value={tempPassword} onChange={e => setTempPassword(e.target.value)}
-                      autoComplete="new-password"
+                      autoComplete="current-password"
                       style={{ width: '100%', background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '14px', padding: '14px 16px 14px 48px', color: 'white', fontSize: '15px', fontWeight: 600, outline: 'none', boxSizing: 'border-box' }}
                     />
                   </div>

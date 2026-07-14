@@ -2435,6 +2435,8 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
                       </span>
                       <input
                         type="email" required autoFocus
+                        name="admin-email"
+                        autoComplete="username"
                         value={loginEmail} onChange={e => setLoginEmail(e.target.value)}
                         placeholder="admin@vediorgm.com"
                         style={{
@@ -2464,6 +2466,8 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
                       </span>
                       <input
                         type={showLoginPwd ? 'text' : 'password'} required
+                        name="admin-password"
+                        autoComplete="current-password"
                         value={loginPassword} onChange={e => setLoginPassword(e.target.value)}
                         placeholder="••••••••••"
                         style={{
@@ -2530,7 +2534,10 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
                         <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', color: A, display: 'flex' }}>
                           <Mail size={16} />
                         </span>
-                        <input type="email" required value={loginEmail} onChange={e => setLoginEmail(e.target.value)}
+                        <input type="email" required
+                          name="admin-reset-email"
+                          autoComplete="email"
+                          value={loginEmail} onChange={e => setLoginEmail(e.target.value)}
                           placeholder="admin@vediorgm.com"
                           style={{
                             width: '100%', background: 'rgba(255,255,255,0.04)', border: `1px solid rgba(59,130,246,0.2)`,
