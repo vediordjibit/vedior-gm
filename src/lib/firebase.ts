@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { getFirestore, setLogLevel } from "firebase/firestore";
 import { getAuth } from "firebase/auth";
 import { getStorage } from "firebase/storage";
 
@@ -14,6 +14,10 @@ const firebaseConfig = {
 };
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+
+// Coupe les warnings internes Firestore (ex: "WebChannelConnection ... transport errored")
+// qui apparaissent lors de coupures réseau temporaires — comportement normal, juste bruyant.
+setLogLevel('silent');
 
 export const db = getFirestore(app);
 export const auth = getAuth(app);
