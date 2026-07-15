@@ -3039,7 +3039,7 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
                     <div style={{ padding: '18px 20px', borderBottom: '1px solid #E5E7EB', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                       <p style={{ fontSize: 14, fontWeight: 700, color: '#111827', letterSpacing: '-0.2px' }}>{t.admin.activeJobs}</p>
                       <div style={{ display: 'flex', gap: 6 }}>
-                        {lang==='EN'?['All','Open','On hold']:lang==='AR'?['الكل','مفتوح','موقوف']:['Tous','Ouverts','En pause'].map((f, fi) => (
+                        {(lang==='EN'?['All','Open','On hold']:lang==='AR'?['الكل','مفتوح','موقوف']:['Tous','Ouverts','En pause']).map((f, fi) => (
                           <button key={f} style={{
                             fontSize: 11.5, fontWeight: 500, padding: '4px 10px', borderRadius: 20,
                             border: `1px solid ${fi === 0 ? '#4F6EF7' : '#E5E7EB'}`,
@@ -3053,7 +3053,7 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
                     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                       <thead>
                         <tr style={{ background: '#FAFBFC', borderBottom: '1px solid #E5E7EB' }}>
-                          {lang==='EN'?['Position','Status','Candidates','Progress']:lang==='AR'?['المنصب','الحالة','المرشحون','التقدم']:['Poste','Statut','Candidats','Progression'].map(h => (
+                          {(lang==='EN'?['Position','Status','Candidates','Progress']:lang==='AR'?['المنصب','الحالة','المرشحون','التقدم']:['Poste','Statut','Candidats','Progression']).map(h => (
                             <th key={h} style={{ fontSize: 11, fontWeight: 600, color: '#9CA3AF', textTransform: 'uppercase', letterSpacing: '0.5px', padding: '11px 20px', textAlign: 'left' }}>{h}</th>
                           ))}
                         </tr>
