@@ -1044,14 +1044,14 @@ export default function App() {
           </div>
         </section>
 
-        <section id="services" className="py-40 overflow-hidden relative bg-[#F1F5F9]">
+        <section id="services" className="py-16 sm:py-24 md:py-40 overflow-hidden relative bg-[#F1F5F9]">
           <div className="absolute top-0 left-0 w-full h-full pointer-events-none opacity-40">
             <div className="absolute top-0 right-0 w-1/3 h-1/3 bg-orange/5 rounded-full blur-[120px]" />
             <div className="absolute bottom-0 left-0 w-1/3 h-1/3 bg-navy/5 rounded-full blur-[120px]" />
           </div>
 
           <div className="max-w-7xl mx-auto px-8 relative z-10">
-            <div className="grid lg:grid-cols-[1fr_2fr] gap-24 items-center mb-24">
+            <div className="grid lg:grid-cols-[1fr_2fr] gap-12 lg:gap-24 items-center mb-24">
               <div>
                 <motion.div initial={{ opacity: 0, x: -30 }} whileInView={{ opacity: 1, x: 0 }}>
                   <span className="text-orange font-black uppercase tracking-[0.4em] text-[10px] block mb-6 italic">
@@ -1087,7 +1087,7 @@ export default function App() {
                     initial={{ opacity: 0, y: 30 }} 
                     whileInView={{ opacity: 1, y: 0 }} 
                     transition={{ delay: i * 0.1 }}
-                    className="group bg-[#FBFBFE] p-10 rounded-[3rem] shadow-[0_15px_50px_rgba(0,0,0,0.03)] border border-gray-50 hover:border-orange/20 transition-all duration-500 hover:shadow-2xl hover:-translate-y-2"
+                    className="group bg-[#FBFBFE] p-6 sm:p-8 lg:p-10 rounded-[2rem] sm:rounded-[3rem] shadow-[0_15px_50px_rgba(0,0,0,0.03)] border border-gray-50 hover:border-orange/20 transition-all duration-500 hover:shadow-2xl hover:-translate-y-2"
                   >
                     <div className={`w-16 h-16 ${svc.color === 'orange' ? 'bg-orange text-white' : 'bg-navy text-white'} rounded-2xl flex items-center justify-center mb-8 shadow-lg group-hover:rotate-6 transition-transform`}>
                       <svc.icon size={28} />
@@ -1111,9 +1111,9 @@ export default function App() {
         </section>
 
         {/* RECRUITMENT EXPERTISE - DETAILED */}
-        <section className="py-40 bg-white relative overflow-hidden">
+        <section className="py-16 sm:py-24 md:py-40 bg-white relative overflow-hidden">
           <div className="max-w-7xl mx-auto px-8 relative z-10">
-            <div className="grid lg:grid-cols-2 gap-24 items-center">
+            <div className="grid lg:grid-cols-2 gap-12 lg:gap-24 items-center">
               <motion.div 
                 initial={{ opacity: 0, x: -50 }}
                 whileInView={{ opacity: 1, x: 0 }}
@@ -1218,7 +1218,7 @@ export default function App() {
              <div className="absolute bottom-0 left-0 w-1/2 h-1/2 bg-[#FBFBFE] rounded-full blur-[120px] -ml-1/4 -mb-1/4" />
           </div>
           <div className="max-w-7xl mx-auto px-8 relative z-10">
-            <div className="grid lg:grid-cols-2 gap-24 items-center">
+            <div className="grid lg:grid-cols-2 gap-12 lg:gap-24 items-center">
               <div className="flex flex-col justify-center">
                 <span className="text-orange font-black uppercase tracking-[0.3em] text-[11px] block mb-6 italic opacity-80">{t.candidateSpace.badge}</span>
                 <h2 className="text-3xl sm:text-5xl md:text-6xl font-black text-white mb-12 leading-[1.05] tracking-tighter uppercase">{t.candidateSpace.title}</h2>
@@ -1468,7 +1468,7 @@ export default function App() {
         {/* ESPACE RECRUTEUR (dashboard + steps) */}
         <section id="recruiter" className="py-32 bg-[#F1F5F9] overflow-hidden relative">
           <div className="max-w-7xl mx-auto px-8 relative z-10">
-            <div className="grid lg:grid-cols-2 gap-24 items-center">
+            <div className="grid lg:grid-cols-2 gap-12 lg:gap-24 items-center">
               <motion.div initial={{ opacity: 0, scale: 0.95 }} whileInView={{ opacity: 1, scale: 1 }} className="order-2 lg:order-1 bg-[#F5F8FC] p-10 md:p-16 rounded-[4rem] shadow-inner relative overflow-hidden group">
                 <div className="absolute top-0 right-0 w-64 h-64 bg-white/40 rounded-full blur-3xl -mr-32 -mt-32" />
                 <div className="absolute top-12 left-12 flex gap-2"><div className="w-3 h-3 rounded-full bg-red-400 shadow-sm" /><div className="w-3 h-3 rounded-full bg-yellow-400 shadow-sm" /><div className="w-3 h-3 rounded-full bg-green-400 shadow-sm" /></div>
@@ -1556,11 +1556,11 @@ export default function App() {
         </section>
 
         {/* À PROPOS */}
-        <section id="about" className="py-40 bg-[#F8FAFC] relative overflow-hidden">
+        <section id="about" className="py-16 sm:py-24 md:py-40 bg-[#F8FAFC] relative overflow-hidden">
           <div className="absolute top-0 right-0 w-1/2 h-full bg-[#F1F5F9] -z-0" />
           
           <div className="max-w-7xl mx-auto px-8 relative z-10">
-            <div className="grid lg:grid-cols-2 gap-24 items-center">
+            <div className="grid lg:grid-cols-2 gap-12 lg:gap-24 items-center">
               <motion.div initial={{ opacity: 0, scale: 0.9 }} whileInView={{ opacity: 1, scale: 1 }} transition={{ duration: 1 }}>
                 <div className="relative">
                   <div className="bg-navy p-16 md:p-24 rounded-[4rem] text-white relative z-10 shadow-2xl">
@@ -1634,7 +1634,7 @@ export default function App() {
         </section>
 
         {/* CONTACT */}
-        <section id="contact" className="py-40 bg-navy relative overflow-hidden">
+        <section id="contact" className="py-16 sm:py-24 md:py-40 bg-navy relative overflow-hidden">
           {/* Animated Background Icons */}
           <div className="absolute inset-0 opacity-10 pointer-events-none grid grid-cols-6 gap-20 p-20">
              {[...Array(24)].map((_, i) => (
