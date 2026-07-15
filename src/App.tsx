@@ -217,7 +217,7 @@ const Navbar = ({ onContactClick, onAdminClick, onRecruiterClick, onCandidateCli
                       key={l} 
                       onClick={() => setLang(l as 'FR'|'AR'|'EN')} 
                       className={`px-4 py-2 rounded-lg font-black text-sm transition-all ${
-                        lang === l ? 'bg-orange text-white' : (scrolled ? 'bg-white/5 text-white/40' : 'bg-navy/5 text-navy/40')
+                        lang === l ? 'bg-orange text-white' : 'bg-white/10 text-white/50 hover:text-white'
                       }`}
                     >
                       {l}
