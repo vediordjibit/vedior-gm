@@ -166,6 +166,7 @@ export default function AdminPanel({ onBack }: AdminPanelProps) {
   const [loginMode, setLoginMode] = useState<'login' | 'reset'>('login');
   const [resetSent, setResetSent] = useState(false);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'jobs' | 'applications' | 'recruiters' | 'needs' | 'diagnostics' | 'settings' | 'users' | 'pricing' | 'messages'>('dashboard');
+  const [dashJobsFilter, setDashJobsFilter] = useState<'all' | 'open' | 'onhold'>('all');
 
   // ── Messages & demandes de modification ──
   const [adminMessages, setAdminMessages] = useState<any[]>([]);
@@ -3039,14 +3040,14 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
                     <div style={{ padding: '18px 20px', borderBottom: '1px solid #E5E7EB', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                       <p style={{ fontSize: 14, fontWeight: 700, color: '#111827', letterSpacing: '-0.2px' }}>{t.admin.activeJobs}</p>
                       <div style={{ display: 'flex', gap: 6 }}>
-                        {(lang==='EN'?['All','Open','On hold']:lang==='AR'?['الكل','مفتوح','موقوف']:['Tous','Ouverts','En pause']).map((f, fi) => (
-                          <button key={f} style={{
+                        {(lang==='EN'?[{k:'all',l:'All'},{k:'open',l:'Open'},{k:'onhold',l:'On hold'}]:lang==='AR'?[{k:'all',l:'الكل'},{k:'open',l:'مفتوح'},{k:'onhold',l:'موقوف'}]:[{k:'all',l:'Tous'},{k:'open',l:'Ouverts'},{k:'onhold',l:'En pause'}]).map((f) => (
+                          <button key={f.k} onClick={() => setDashJobsFilter(f.k as 'all'|'open'|'onhold')} style={{
                             fontSize: 11.5, fontWeight: 500, padding: '4px 10px', borderRadius: 20,
-                            border: `1px solid ${fi === 0 ? '#4F6EF7' : '#E5E7EB'}`,
-                            background: fi === 0 ? '#4F6EF7' : 'transparent',
-                            color: fi === 0 ? '#fff' : '#6B7280',
+                            border: `1px solid ${dashJobsFilter === f.k ? '#4F6EF7' : '#E5E7EB'}`,
+                            background: dashJobsFilter === f.k ? '#4F6EF7' : 'transparent',
+                            color: dashJobsFilter === f.k ? '#fff' : '#6B7280',
                             cursor: 'pointer', fontFamily: 'Inter, sans-serif',
-                          }}>{f}</button>
+                          }}>{f.l}</button>
                         ))}
                       </div>
                     </div>
@@ -3059,7 +3060,17 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
                         </tr>
                       </thead>
                       <tbody>
-                        {jobs.slice(0, 5).map((job: any, i: number) => {
+                        {(() => {
+                          const filteredDashJobs = jobs.filter((job: any) => {
+                            const isActive = !job.status || job.status === 'active';
+                            if (dashJobsFilter === 'open') return isActive;
+                            if (dashJobsFilter === 'onhold') return !isActive;
+                            return true;
+                          });
+                          if (filteredDashJobs.length === 0) {
+                            return <tr><td colSpan={4} style={{ padding: '32px 20px', textAlign: 'center', fontSize: 12, color: '#D1D5DB' }}>{t.admin.noActiveJobs}</td></tr>;
+                          }
+                          return filteredDashJobs.slice(0, 5).map((job: any, i: number) => {
                           const count = applications.filter((a: any) => a.jobId === job.id || a.jobTitle === job.title).length;
                           const pct = Math.min(99, count * 8 + ((i * 17 + 15) % 70));
                           const isActive = !job.status || job.status === 'active';
@@ -3092,10 +3103,8 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
                               </td>
                             </tr>
                           );
-                        })}
-                        {jobs.length === 0 && (
-                          <tr><td colSpan={4} style={{ padding: '32px 20px', textAlign: 'center', fontSize: 12, color: '#D1D5DB' }}>{t.admin.noActiveJobs}</td></tr>
-                        )}
+                          });
+                        })()}
                       </tbody>
                     </table>
                   </div>
