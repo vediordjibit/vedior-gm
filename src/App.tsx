@@ -772,7 +772,7 @@ export default function App() {
 
             {/* Headline */}
             <motion.h1 initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
-              className="text-4xl md:text-3xl sm:text-6xl font-black text-navy tracking-tight mb-4 leading-tight">
+              className="text-3xl sm:text-5xl md:text-6xl font-black text-navy tracking-tight mb-4 leading-tight px-2">
               {lang === 'AR'
                 ? t.hero_section.headlineAR
                 : <>{t.hero_section.headlineLine1} <span className="text-blue-600">{t.hero_section.headlineLine3}</span></>
@@ -785,7 +785,7 @@ export default function App() {
 
             {/* Search bar */}
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}
-              className="flex gap-3 max-w-2xl mx-auto mb-8">
+              className="flex flex-col sm:flex-row gap-3 max-w-2xl mx-auto mb-8 px-2">
               <div className="flex-1 flex items-center gap-3 bg-white border-2 border-gray-200 rounded-2xl px-5 py-3.5 shadow-sm focus-within:border-orange transition-all">
                 <Search size={18} className="text-gray-300 shrink-0" />
                 <input
@@ -793,12 +793,12 @@ export default function App() {
                   placeholder={lang === 'FR' ? 'Rechercher un poste, une compétence...' : lang === 'EN' ? 'Search a job, skill...' : 'ابحث عن وظيفة...'}
                   value={search}
                   onChange={e => setSearch(e.target.value)}
-                  className="flex-1 bg-transparent outline-none text-sm font-bold text-navy placeholder:text-gray-300"
+                  className="flex-1 bg-transparent outline-none text-sm font-bold text-navy placeholder:text-gray-300 min-w-0"
                 />
               </div>
               <button
                 onClick={() => document.getElementById('jobs-board')?.scrollIntoView({ behavior: 'smooth' })}
-                className="bg-orange text-white px-7 py-3.5 rounded-2xl font-black text-sm hover:bg-navy transition-all shadow-lg shadow-orange/25">
+                className="w-full sm:w-auto bg-orange text-white px-7 py-3.5 rounded-2xl font-black text-sm hover:bg-navy transition-all shadow-lg shadow-orange/25 shrink-0">
                 {lang === 'FR' ? 'Rechercher' : lang === 'EN' ? 'Search' : 'بحث'}
               </button>
             </motion.div>
@@ -1057,7 +1057,7 @@ export default function App() {
                   <span className="text-orange font-black uppercase tracking-[0.4em] text-[10px] block mb-6 italic">
                     {t.hero_section.ourExpertise}
                   </span>
-                  <h2 className="text-4xl md:text-3xl sm:text-6xl font-black text-navy leading-[1.05] mb-8 tracking-tighter uppercase italic">
+                  <h2 className="text-3xl sm:text-5xl md:text-6xl font-black text-navy leading-[1.05] mb-8 tracking-tighter uppercase italic">
                     {t.services.title}
                   </h2>
                   <p className="text-lg text-navy/50 font-bold italic border-l-4 border-orange pl-8 mb-10">
@@ -1221,7 +1221,7 @@ export default function App() {
             <div className="grid lg:grid-cols-2 gap-24 items-center">
               <div className="flex flex-col justify-center">
                 <span className="text-orange font-black uppercase tracking-[0.3em] text-[11px] block mb-6 italic opacity-80">{t.candidateSpace.badge}</span>
-                <h2 className="text-4xl md:text-3xl sm:text-6xl font-black text-white mb-12 leading-[1.05] tracking-tighter uppercase">{t.candidateSpace.title}</h2>
+                <h2 className="text-3xl sm:text-5xl md:text-6xl font-black text-white mb-12 leading-[1.05] tracking-tighter uppercase">{t.candidateSpace.title}</h2>
                 <div className="grid sm:grid-cols-2 gap-8">
                   <div className="bg-white/5 border border-white/10 p-8 rounded-3xl group hover:bg-[#FBFBFE] transition-all duration-500">
                     <div className="w-14 h-14 bg-orange/10 rounded-2xl flex items-center justify-center text-orange mb-6 group-hover:bg-orange group-hover:text-white transition-all duration-500">
@@ -1526,7 +1526,7 @@ export default function App() {
               
               <div className="order-1 lg:order-2">
                 <span className="text-orange font-black uppercase tracking-[0.3em] text-[11px] block mb-6 italic">{t.recruiterSpace.badge}</span>
-                <h2 className="text-4xl md:text-3xl sm:text-6xl font-black text-navy mb-12 leading-[1.05] tracking-tighter uppercase italic">{t.recruiterSpace.title}</h2>
+                <h2 className="text-3xl sm:text-5xl md:text-6xl font-black text-navy mb-12 leading-[1.05] tracking-tighter uppercase italic">{t.recruiterSpace.title}</h2>
                 <div className="space-y-12">
                   {[
                     { step: '01', title: t.recruiterSpace.steps.step1, desc: t.recruiterSpace.steps.desc1, icon: Search },
@@ -1596,7 +1596,7 @@ export default function App() {
                   <span className="text-orange font-black uppercase tracking-[0.4em] text-[10px] block mb-6 italic">
                     {t.about.badge}
                   </span>
-                  <h2 className="text-4xl md:text-3xl sm:text-6xl font-black text-navy mb-8 tracking-tighter uppercase italic leading-[1.05]">
+                  <h2 className="text-3xl sm:text-5xl md:text-6xl font-black text-navy mb-8 tracking-tighter uppercase italic leading-[1.05]">
                     {t.about.title}
                   </h2>
                   <p className="text-lg text-navy/40 font-bold italic mb-12 max-w-md">
