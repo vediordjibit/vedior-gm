@@ -5588,7 +5588,7 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
               {/* ── Header ── */}
               <div className="relative flex items-center justify-between px-4 sm:px-10 pt-6 sm:pt-10 pb-5 sm:pb-8 shrink-0"
                 style={{ background: 'linear-gradient(135deg,#0F172A 0%,#1e3a5f 100%)' }}>
-                <div className="absolute -right-8 -top-8 w-40 h-40 rounded-full opacity-10"
+                <div className="absolute -right-8 -top-8 w-40 h-40 rounded-full opacity-10 pointer-events-none"
                   style={{ background: 'radial-gradient(circle,#f97316,transparent)' }} />
                 <div>
                   <p className="text-[10px] font-black uppercase tracking-[0.3em] text-orange/70 mb-1">
@@ -5599,7 +5599,7 @@ IMPORTANT : Réponds UNIQUEMENT avec le JSON ci-dessous, aucun texte avant ou ap
                   </h3>
                 </div>
                 <button onClick={() => { setShowAddJob(false); setEditingJob(null); setSelectedSkillsJob([]); setSkillInputJob(''); }}
-                  className="w-11 h-11 rounded-full flex items-center justify-center text-white/50 hover:text-white hover:bg-white/10 transition-all shrink-0">
+                  className="relative z-10 w-11 h-11 rounded-full flex items-center justify-center text-white/50 hover:text-white hover:bg-white/10 transition-all shrink-0">
                   <X size={22} />
                 </button>
               </div>
