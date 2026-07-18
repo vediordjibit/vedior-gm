@@ -1208,16 +1208,26 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                   </p>
                 </div>
               </div>
-              <form onSubmit={handlePhoneLogin}>
+              <form onSubmit={handlePhoneLogin} autoComplete="off">
+                {/* Champ caché pour bloquer l'autofill email du navigateur */}
+                <input type="text" name="prevent_autofill" style={{ display: 'none' }} readOnly />
+                <input type="password" name="prevent_autofill_pwd" style={{ display: 'none' }} readOnly />
                 <div style={{ marginBottom: '16px' }}>
                   <label style={{ color: 'rgba(255,255,255,0.4)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.15em', display: 'block', marginBottom: '8px' }}>
                     {lang === 'FR' ? 'NUMÉRO DE TÉLÉPHONE' : lang === 'AR' ? 'رقم الهاتف' : 'PHONE NUMBER'}
                   </label>
                   <div style={{ position: 'relative' }}>
                     <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 18, pointerEvents: 'none' }}>📱</span>
-                    <input id="loginPhone" name="loginPhone" type="tel"
+                    <input
+                      id="candidate-phone-login"
+                      name="candidate-phone"
+                      type="tel"
                       value={loginPhone} onChange={e => setLoginPhone(e.target.value)}
-                      placeholder="77310000" autoComplete="off"
+                      placeholder="77310000"
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
                       style={{ width: '100%', background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '14px', padding: '14px 16px 14px 48px', color: 'white', fontSize: '15px', fontWeight: 600, outline: 'none', boxSizing: 'border-box' }}
                     />
                   </div>
@@ -1229,9 +1239,12 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                   </label>
                   <div style={{ position: 'relative' }}>
                     <span style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', fontSize: 18, pointerEvents: 'none' }}>🔒</span>
-                    <input id="loginPassword" name="loginPassword" type="password"
+                    <input
+                      id="candidate-password-login"
+                      name="candidate-password"
+                      type="password"
                       value={tempPassword} onChange={e => setTempPassword(e.target.value)}
-                      autoComplete="current-password"
+                      autoComplete="new-password"
                       style={{ width: '100%', background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '14px', padding: '14px 16px 14px 48px', color: 'white', fontSize: '15px', fontWeight: 600, outline: 'none', boxSizing: 'border-box' }}
                     />
                   </div>
