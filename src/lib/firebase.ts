@@ -5,7 +5,7 @@ import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCjb-2sd5jgoUt7U-E3lWTQnuuX7xO0GPs",
-  authDomain: "vediorgm.firebaseapp.com",
+  authDomain: "vediorgm.com",
   projectId: "vediorgm",
   storageBucket: "vediorgm.firebasestorage.app",
   messagingSenderId: "790538302349",
@@ -15,8 +15,6 @@ const firebaseConfig = {
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
-// Coupe les warnings internes Firestore (ex: "WebChannelConnection ... transport errored")
-// qui apparaissent lors de coupures réseau temporaires — comportement normal, juste bruyant.
 setLogLevel('silent');
 
 export const db = getFirestore(app);
