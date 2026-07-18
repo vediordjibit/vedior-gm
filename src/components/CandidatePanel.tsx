@@ -18,7 +18,7 @@ import {
   collection, query, where, orderBy, onSnapshot, doc, setDoc, addDoc, serverTimestamp, updateDoc
 } from 'firebase/firestore';
 import { 
-  signInWithPopup as authSignInWithPopup, GoogleAuthProvider, signOut,
+  signInWithPopup as authSignInWithPopup, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut,
   signInWithEmailAndPassword, createUserWithEmailAndPassword,
   sendPasswordResetEmail, sendEmailVerification
 } from 'firebase/auth';
@@ -194,6 +194,38 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
   const onSignOutRef = React.useRef(onSignOut);
   const onBackRef = React.useRef(onBack);
   useEffect(() => { onSignOutRef.current = onSignOut; onBackRef.current = onBack; });
+
+  // ── Traitement retour redirect Google ──────────────────────────────────────
+  useEffect(() => {
+    getRedirectResult(auth).then(async (result) => {
+      if (!result) return;
+      const u = result.user;
+      try {
+        const { getDoc: gd, doc: d2, setDoc: sd } = await import('firebase/firestore');
+        const userRef = d2(db, 'users', u.uid);
+        const userSnap = await gd(userRef);
+        if (!userSnap.exists()) {
+          await sd(userRef, {
+            uid: u.uid,
+            firebaseUid: u.uid,
+            email: u.email || '',
+            displayName: u.displayName || '',
+            photoURL: u.photoURL || '',
+            role: 'candidate',
+            status: 'active',
+            loginMethod: 'google',
+            createdAt: serverTimestamp(),
+            gmailConfirmed: true,
+            profileComplete: false,
+          });
+        }
+      } catch (e) {
+        console.warn('[Auth] getRedirectResult user doc error:', e);
+      }
+    }).catch(err => {
+      console.error('[Auth] getRedirectResult error:', err);
+    });
+  }, []);
 
   useEffect(() => {
     const unsubscribeAuth = auth.onAuthStateChanged(async (u) => {
@@ -674,6 +706,19 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
   };
 
   const login = async () => {
+    try {
+      const provider = new GoogleAuthProvider();
+      // Utiliser redirect au lieu de popup pour éviter les erreurs COOP
+      await signInWithRedirect(auth, provider);
+      return; // La page va se recharger, getRedirectResult() s'en occupe
+    } catch (err: any) {
+      console.error('[Auth] Google redirect error:', err);
+      setLoginError(err.message || 'Erreur connexion Google');
+    }
+  };
+
+  // ── Traitement du retour après redirect Google ──────────────────────────────
+  const loginLegacy = async () => {
     try {
       const provider = new GoogleAuthProvider();
       const result = await authSignInWithPopup(auth, provider);
