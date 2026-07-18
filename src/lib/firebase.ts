@@ -5,7 +5,15 @@ import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCjb-2sd5jgoUt7U-E3lWTQnuuX7xO0GPs",
-  authDomain: "vediorgm.com",
+  authDomain: "vediorgm.firebaseapp.com", // Domaine TECHNIQUE Firebase, pas vediorgm.com — sert
+                                            // les helpers internes (popup Google, /__/auth/iframe).
+                                            // App Hosting (Next.js) ne sert pas ces chemins spéciaux,
+                                            // contrairement au Firebase Hosting classique — d'où le
+                                            // 404 sur /__/auth/iframe quand ce champ pointait vers
+                                            // vediorgm.com. N'affecte PAS la page /auth-action perso
+                                            // (reset password / vérif email), qui appelle l'API
+                                            // Identity Toolkit directement via l'apiKey, indépendamment
+                                            // de ce champ.
   projectId: "vediorgm",
   storageBucket: "vediorgm.firebasestorage.app",
   messagingSenderId: "790538302349",
