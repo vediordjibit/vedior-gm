@@ -208,16 +208,34 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
             if (role && role !== 'candidate') {
               await signOut(auth); setUser(null); setAuthLoading(false); return;
             }
-            // Déconnecter si compte vide (pas de fullName ni phone)
+            // Compte vide → onboarding obligatoire (ne pas déconnecter)
             const hasValidData = !!(data.fullName && (data.phone || data.email));
             if (!hasValidData) {
-              console.log('[Auth] Account has no data — signing out');
-              await signOut(auth); setUser(null); setAuthLoading(false); return;
+              console.log('[Auth] Account incomplete — will show onboarding');
+              // Ne pas déconnecter — l'onboarding s'affichera car profileComplete = false
             }
           } else {
-            // Pas de document Firestore → compte Firebase orphelin → déconnecter
-            console.log('[Auth] No Firestore user doc — signing out orphan account');
-            await signOut(auth); setUser(null); setAuthLoading(false); return;
+            // Pas de document Firestore → compte Google sans profil
+            // Créer un doc minimal et laisser l'onboarding s'afficher
+            console.log('[Auth] No Firestore user doc — creating minimal doc for Google user');
+            try {
+              const { addDoc, collection: col3, serverTimestamp: st3 } = await import('firebase/firestore');
+              await addDoc(col3(db, 'users'), {
+                firebaseUid: u.uid,
+                email: u.email || '',
+                displayName: u.displayName || '',
+                photoUrl: u.photoURL || '',
+                role: 'candidate',
+                fullName: u.displayName || '',
+                phone: '',
+                profileComplete: false,
+                createdAt: st3(),
+                source: 'google',
+              });
+            } catch (createErr) {
+              console.warn('[Auth] Failed to create user doc:', createErr);
+            }
+            // L'onboarding sera déclenché car profileComplete = false
           }
         } catch (_) {}
         setUser(u);
@@ -549,14 +567,30 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
         updatedAt: serverTimestamp(),
         profileComplete: true,
       }, { merge: true });
-      // Mettre à jour aussi la collection users pour que l'admin voit le profil complet
-      const { doc: d2, setDoc: sd, getDoc: gd } = await import('firebase/firestore');
-      await sd(d2(db, 'users', user?.uid), {
-        displayName: profileForm.fullName,
-        phone: profileForm.phone || '',
-        profileComplete: true,
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
+      // Mettre à jour le doc users (chercher par firebaseUid car addDoc génère un ID auto)
+      try {
+        const { getDocs, query: q3, collection: col3, where: wh3, updateDoc, doc: d3 } = await import('firebase/firestore');
+        const usersSnap = await getDocs(q3(col3(db, 'users'), wh3('firebaseUid', '==', user.uid)));
+        if (!usersSnap.empty) {
+          await updateDoc(d3(db, 'users', usersSnap.docs[0].id), {
+            displayName: profileForm.fullName,
+            fullName: profileForm.fullName,
+            phone: profileForm.phone || '',
+            nationality: profileForm.nationality || '',
+            education: profileForm.education || '',
+            experience: profileForm.experience || '',
+            address: profileForm.address || '',
+            birthDate: profileForm.birthDate || '',
+            languages: profileForm.languages || '',
+            gender: profileForm.gender || 'M',
+            availability: profileForm.availability || '',
+            profileComplete: true,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } catch (usersErr) {
+        console.warn('users doc update failed:', usersErr);
+      }
       setIsNewUser(false);
       setNotification({ message: lang === 'FR' ? 'Profil créé avec succès ! Bienvenue 🎉' : 'Profile created! Welcome 🎉', type: 'success' });
       setTimeout(() => setNotification(null), 4000);
