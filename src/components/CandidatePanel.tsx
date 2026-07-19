@@ -236,20 +236,17 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
           if (!snap.empty) {
             const data = snap.docs[0].data();
             const role = data.role;
-            // Déconnecter si pas candidat
+            // Déconnecter SEULEMENT si le rôle est explicitement non-candidat (admin/recruiter)
             if (role && role !== 'candidate') {
+              console.log('[Auth] Non-candidate role — signing out:', role);
               await signOut(auth); setUser(null); setAuthLoading(false); return;
             }
-            // Compte vide → onboarding obligatoire (ne pas déconnecter)
-            const hasValidData = !!(data.fullName && (data.phone || data.email));
-            if (!hasValidData) {
-              console.log('[Auth] Account incomplete — will show onboarding');
-              // Ne pas déconnecter — l'onboarding s'affichera car profileComplete = false
-            }
+            // Profil incomplet → laisser connecté, l'onboarding s'affichera
+            console.log('[Auth] Candidate logged in:', data.fullName || data.email || u.uid);
           } else {
-            // Pas de document Firestore → compte Google sans profil
+            // Pas de document Firestore → nouveau compte Google
             // Créer un doc minimal et laisser l'onboarding s'afficher
-            console.log('[Auth] No Firestore user doc — creating minimal doc for Google user');
+            console.log('[Auth] No Firestore doc — creating minimal doc');
             try {
               const { addDoc, collection: col3, serverTimestamp: st3 } = await import('firebase/firestore');
               await addDoc(col3(db, 'users'), {
@@ -261,15 +258,23 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                 fullName: u.displayName || '',
                 phone: '',
                 profileComplete: false,
+                loginMethod: 'google',
+                gmailConfirmed: true,
                 createdAt: st3(),
                 source: 'google',
               });
+              console.log('[Auth] Minimal doc created for Google user');
             } catch (createErr) {
-              console.warn('[Auth] Failed to create user doc:', createErr);
+              // Même si la création échoue, laisser l'utilisateur connecté
+              console.warn('[Auth] Failed to create user doc (non-blocking):', createErr);
             }
-            // L'onboarding sera déclenché car profileComplete = false
           }
-        } catch (_) {}
+        } catch (firestoreErr) {
+          // Erreur Firestore (réseau, permissions, etc.) — NE PAS déconnecter
+          // L'utilisateur reste connecté, on réessaiera au prochain rendu
+          console.warn('[Auth] Firestore error (non-blocking):', firestoreErr);
+        }
+        // Toujours setUser(u) même si Firestore a échoué
         setUser(u);
       } else {
         setUser(null);
