@@ -740,12 +740,53 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
 
   const login = async () => {
     try {
+      setLoginError('');
       const provider = new GoogleAuthProvider();
-      await signInWithRedirect(auth, provider);
-      return;
+      // signInWithPopup au lieu de signInWithRedirect : la page reste sur
+      // vediorgm.com en permanence — seule une popup s'ouvre brièvement vers
+      // Google/Firebase pour l'authentification (incontournable pour tout
+      // login Google), sans jamais rediriger l'onglet principal. Évite aussi
+      // le bug "missing initial state" du redirect cross-origin.
+      const result = await authSignInWithPopup(auth, provider);
+      const u = result.user;
+      try {
+        const { getDoc: gd, doc: d2, setDoc: sd } = await import('firebase/firestore');
+        const userRef = d2(db, 'users', u.uid);
+        const userSnap = await gd(userRef);
+        if (!userSnap.exists()) {
+          await sd(userRef, {
+            uid: u.uid,
+            firebaseUid: u.uid,
+            email: u.email || '',
+            displayName: u.displayName || '',
+            photoURL: u.photoURL || '',
+            role: 'candidate',
+            status: 'active',
+            loginMethod: 'google',
+            createdAt: serverTimestamp(),
+            gmailConfirmed: true,
+            profileComplete: false,
+          });
+        }
+        const profileRef = d2(db, 'candidateProfiles', u.uid);
+        const profileSnap = await gd(profileRef);
+        if (!profileSnap.exists()) {
+          await sd(profileRef, {
+            uid: u.uid,
+            email: u.email || '',
+            fullName: u.displayName || '',
+            profileComplete: false,
+            createdAt: serverTimestamp(),
+          });
+        }
+      } catch (e) {
+        console.warn('[Auth] Google login user doc error:', e);
+      }
     } catch (err: any) {
-      console.error('[Auth] Google redirect error:', err);
-      setLoginError(err.message || 'Erreur connexion Google');
+      console.error('[Auth] Google popup error:', err);
+      if (err.code !== 'auth/popup-closed-by-user' && err.code !== 'auth/cancelled-popup-request') {
+        setLoginError(err.message || 'Erreur connexion Google');
+      }
     }
   };
 
