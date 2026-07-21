@@ -1,3 +1,4 @@
+// RecruiterPricing.jsx (complet)
 import { useEffect, useState } from "react";
 import { db } from "../lib/firebase";
 import { collection, query, where, getDocs, getDoc, updateDoc, addDoc, doc, orderBy, onSnapshot } from "firebase/firestore";
@@ -124,95 +125,42 @@ const T = {
   },
 };
 
-const PLANS=[
-  {id:"monthly",  price:15000,  saveIdx:0},
-  {id:"quarterly",price:39000,  saveIdx:1},
-  {id:"yearly",   price:144000, saveIdx:2},
-];
-const BANK=[
-  ["Banque / Bank","Banque Centrale de Djibouti (BCD)"],
-  ["Titulaire","Vedior GM SARL"],
-  ["N° Compte","DJ 01 0001 0000 1234 5678 9012"],
-  ["IBAN","DJ 01 0001 0000 1234 5678 9012"],
-  ["BIC / SWIFT","BCDIJDJA"],
-  ["Référence / Reference","PRO-[votre email]"],
-];
-const DEFAULT_PRICING = {
-  monthlyPrice: 15000,
-  quarterlyPrice: 39000,
-  yearlyPrice: 144000,
-  freeJobsLimit: 1,
-  freeApplicationsLimit: 5,
-  freeRequestsLimit: 1,
-  proJobsLimit: -1, // -1 = illimité, configurable par l'admin
-  cacNumber: "+253 77 XX XX XX",
-  cacEnabled: true,
-  bankName: "Banque Centrale de Djibouti (BCD)",
-  bankHolder: "Vedior GM SARL",
-  bankAccount: "DJ 01 0001 0000 XXXX XXXX XXXX",
-  bankIban: "DJ 01 0001 0000 XXXX XXXX XXXX",
-  bankBic: "BCDIJDJA",
-  bankEnabled: true,
-  cardEnabled: false,
-  cardProvider: "Stripe",
-  cardPublicKey: "",
-  cardSecretKeyEnv: "PAYMENT_SECRET_KEY",
-  cardCheckoutUrl: "",
-  cardWebhookUrl: "",
-  supportEmail: "support@vedior-gm.dj",
-};
-const fmtCard=v=>v.replace(/\D/g,"").slice(0,16).replace(/(.{4})/g,"$1 ").trim();
-const fmtExp=v=>{const d=v.replace(/\D/g,"").slice(0,4);return d.length>=3?d.slice(0,2)+"/"+d.slice(2):d;};
-
-// ─────────────────────────────────────────────
-// Historique de facturation du recruteur connecté — lecture via
-// `recruiterEmail` (correspond à la règle Firestore payments), téléchargement
-// via la Cloud Function `downloadInvoice` (génère si besoin, europe-west1).
-// ─────────────────────────────────────────────
-// Shared helper: update planStatus in users + recruiters regardless of how account was created
+// ─── Helper pour mettre à jour le statut du recruteur dans Firestore ───
 async function updatePlanStatus(db, userUid, userEmail, data) {
   let updated = false;
   for (const col of ['users', 'recruiters']) {
     for (const field of ['userId', 'firebaseUid', 'uid']) {
       try {
         const snap = await getDocs(query(collection(db, col), where(field, '==', userUid)));
-        console.log(`[DEBUG] query ${col}.${field}==${userUid} -> ${snap.size} doc(s)`);
         if (!snap.empty) {
           await updateDoc(doc(db, col, snap.docs[0].id), data);
-          console.log(`[DEBUG] updateDoc ${col}/${snap.docs[0].id} SUCCESS`);
           updated = true;
           break;
         }
-      } catch (err) {
-        console.error(`[DEBUG] FAILED on ${col}.${field}:`, err.code, err.message);
-      }
+      } catch (err) {}
     }
+    if (updated) break;
   }
   if (!updated && userEmail) {
     for (const col of ['users', 'recruiters']) {
       try {
         const snap = await getDocs(query(collection(db, col), where('email', '==', userEmail)));
-        console.log(`[DEBUG] query ${col}.email==${userEmail} -> ${snap.size} doc(s)`);
         if (!snap.empty) {
           await updateDoc(doc(db, col, snap.docs[0].id), data);
-          console.log(`[DEBUG] updateDoc ${col}/${snap.docs[0].id} SUCCESS`);
           updated = true;
           break;
         }
-      } catch (err) {
-        console.error(`[DEBUG] FAILED on ${col}.email:`, err.code, err.message);
-      }
+      } catch (err) {}
     }
   }
   if (!updated) {
-    console.warn('[DEBUG] falling back to pendingPayments — nothing matched or all updates were rejected');
     await addDoc(collection(db, 'pendingPayments'), {
       ...data, userUid, userEmail, createdAt: new Date().toISOString(),
-    }).catch((err) => console.error('[DEBUG] pendingPayments fallback FAILED:', err.code, err.message));
+    });
   }
 }
 
-
+// ─── Composant des factures ───
 function MyInvoices({ lang }) {
   const [payments, setPayments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -344,7 +292,7 @@ function MyInvoices({ lang }) {
   );
 }
 
-
+// ─── COMPOSANT PRINCIPAL ───
 export default function RecruiterPricing({ lang: langProp = "FR" }){
   const [lang,setLang]=useState(langProp);
   const [billing,setBilling]=useState("monthly");
@@ -354,8 +302,14 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
   const [copied,setCopied]=useState("");
   const [card,setCard]=useState({number:"",name:"",expiry:"",cvv:""});
   const [pricing, setPricing] = useState(DEFAULT_PRICING);
+  const [cacStep, setCacStep] = useState('phone'); // 'phone' ou 'otp'
+  const [cacPhone, setCacPhone] = useState('');
+  const [cacOtp, setCacOtp] = useState('');
+  const [cacTransactionId, setCacTransactionId] = useState('');
+  const [cacLoading, setCacLoading] = useState(false);
+  const [cacError, setCacError] = useState('');
 
-  // Load pricing config from Firestore (real-time, so admin toggles apply instantly)
+  // Load pricing config from Firestore
   useEffect(() => {
     const unsub = onSnapshot(
       doc(db, 'settings_pricing', 'config'),
@@ -367,14 +321,12 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
     return () => unsub();
   }, []);
 
-  // Dynamic PLANS from Firestore pricing
   const PLANS = [
     { id: "monthly",   price: pricing.monthlyPrice,   saveIdx: 0 },
     { id: "quarterly", price: pricing.quarterlyPrice, saveIdx: 1 },
     { id: "yearly",    price: pricing.yearlyPrice,    saveIdx: 2 },
   ];
 
-  // Dynamic BANK from Firestore pricing
   const BANK = [
     ["Banque / Bank", pricing.bankName],
     ["Titulaire", pricing.bankHolder],
@@ -384,7 +336,6 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
     ["Référence / Reference", `PRO-[votre email]`],
   ];
 
-  // Update saves text dynamically
   const mSave = ((1 - pricing.quarterlyPrice / (pricing.monthlyPrice * 3)) * 100).toFixed(0);
   const ySave = ((1 - pricing.yearlyPrice / (pricing.monthlyPrice * 12)) * 100).toFixed(0);
 
@@ -402,17 +353,17 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
   }, [pricing.cardEnabled, pricing.cacEnabled, pricing.bankEnabled, method]);
 
   const paymentMethods = [
-    {id:"card",icon:"ðŸ’³",label:t.cardLabel,sub:t.cardSub,enabled:pricing.cardEnabled},
-    {id:"cac",icon:"ðŸ“±",label:t.cacLabel,sub:t.cacSub,enabled:pricing.cacEnabled},
-    {id:"transfer",icon:"ðŸ¦",label:t.transferLabel,sub:t.transferSub,enabled:pricing.bankEnabled},
+    {id:"card",icon:"💳",label:t.cardLabel,sub:t.cardSub,enabled:pricing.cardEnabled},
+    {id:"cac",icon:"📱",label:t.cacLabel,sub:t.cacSub,enabled:pricing.cacEnabled},
+    {id:"transfer",icon:"🏦",label:t.transferLabel,sub:t.transferSub,enabled:pricing.bankEnabled},
   ].filter(m => m.enabled);
 
-  // Override saves and freeF dynamically with Firestore pricing
   const saves = [
     "",
     lang === 'FR' ? `Économisez ${mSave}% (${((pricing.monthlyPrice*3)-pricing.quarterlyPrice).toLocaleString('fr-FR')} FDJ)` : `Save ${mSave}%`,
     lang === 'FR' ? `Économisez ${ySave}% 🔥` : `Save ${ySave}% 🔥`,
   ];
+
   const freeF = lang === 'FR' ? [
     {t:`${pricing.freeJobsLimit} offre${pricing.freeJobsLimit>1?'s':''} active${pricing.freeJobsLimit>1?'s':''}`,ok:true},
     {t:`${pricing.freeApplicationsLimit} candidatures visibles / offre`,ok:true},
@@ -440,6 +391,7 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
     {t:"Verified Recruiter Badge ✓",ok:false},
     {t:"Unlimited offers",ok:false},
   ];
+
   const proJobsLabel = pricing.proJobsLimit === -1
     ? (lang==='FR' ? 'Offres illimitées' : 'Unlimited offers')
     : (lang==='FR' ? `${pricing.proJobsLimit} offres actives max` : `${pricing.proJobsLimit} active offers max`);
@@ -458,6 +410,7 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
     {t:"Unlimited recruitment requests",s:false},{t:"Multi-user (3 accounts)",s:false},
     {t:"Priority support (2h)",s:false},{t:"Recruitment history",s:false},
   ]);
+
   const rows = [
     [lang==='FR'?"Offres actives":"Active offers", String(pricing.freeJobsLimit), pricing.proJobsLimit===-1?(lang==='FR'?'Illimité':'Unlimited'):String(pricing.proJobsLimit)],
     [lang==='FR'?"Candidatures / offre":"Applications / offer", String(pricing.freeApplicationsLimit), lang==='FR'?'Illimité':'Unlimited'],
@@ -470,11 +423,187 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
     [lang==='FR'?"Badge Vérifié":"Verified Badge","—","✓"],
     [lang==='FR'?"Support":"Support", lang==='FR'?"Email 48h":"Email 48h", lang==='FR'?"Prioritaire 2h":"Priority 2h"],
   ];
+
   const plan=PLANS.find(p=>p.id===billing);
   const price=plan.price.toLocaleString("fr-FR");
   const cp=(text,key)=>{navigator.clipboard.writeText(text);setCopied(key);setTimeout(()=>setCopied(""),2000);};
 
-  return(
+  // ── Gestion CAC Pay ──
+  const initiateCacPayment = async () => {
+    setCacLoading(true);
+    setCacError('');
+    try {
+      const auth = getAuth();
+      const user = auth.currentUser;
+      if (!user) {
+        setCacError(lang==='FR'?'Vous devez être connecté':'You must be logged in');
+        setCacLoading(false);
+        return;
+      }
+      // Nettoyer le numéro
+      const cleanPhone = cacPhone.replace(/\D/g, '');
+      if (cleanPhone.length < 6) {
+        setCacError(lang==='FR'?'Numéro invalide':'Invalid phone number');
+        setCacLoading(false);
+        return;
+      }
+      const response = await fetch('/api/payment/cac/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone: cleanPhone,
+          amount: plan.price,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Erreur lors de l\'initiation');
+      }
+      setCacTransactionId(data.transactionId);
+      setCacStep('otp');
+      // En mode mock, on peut pré-remplir l'OTP pour faciliter les tests
+      if (process.env.NEXT_PUBLIC_PAYMENT_MOCK_MODE === 'true') {
+        setCacOtp(data.otp || '');
+      }
+    } catch (error) {
+      setCacError(error.message);
+    } finally {
+      setCacLoading(false);
+    }
+  };
+
+  const confirmCacPayment = async () => {
+    setCacLoading(true);
+    setCacError('');
+    try {
+      const auth = getAuth();
+      const user = auth.currentUser;
+      if (!user) {
+        setCacError(lang==='FR'?'Vous devez être connecté':'You must be logged in');
+        setCacLoading(false);
+        return;
+      }
+      // Récupérer l'ID du recruteur depuis Firestore
+      const recruitersSnap = await getDocs(query(collection(db, 'recruiters'), where('email', '==', user.email)));
+      let recruiterId = null;
+      if (!recruitersSnap.empty) {
+        recruiterId = recruitersSnap.docs[0].id;
+      } else {
+        // Fallback : créer un doc recruteur si inexistant
+        const newRecruiterRef = await addDoc(collection(db, 'recruiters'), {
+          email: user.email,
+          displayName: user.displayName || '',
+          companyName: '',
+          plan: 'free',
+          createdAt: new Date().toISOString(),
+        });
+        recruiterId = newRecruiterRef.id;
+      }
+
+      const response = await fetch('/api/payment/cac/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transactionId: cacTransactionId,
+          otp: cacOtp,
+          recruiterId: recruiterId,
+          billing: billing,
+          amount: plan.price,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Erreur lors de la confirmation');
+      }
+      // Succès
+      alert(lang==='FR'?'✅ Paiement confirmé ! Abonnement Pro activé.' : '✅ Payment confirmed! Pro plan activated.');
+      setModal(false);
+      // Recharger la page pour mettre à jour l'interface
+      window.location.reload();
+    } catch (error) {
+      setCacError(error.message);
+    } finally {
+      setCacLoading(false);
+    }
+  };
+
+  // ── Gestion Carte (mock) ──
+  const handleCardPayment = async () => {
+    // Validation basique
+    if (!card.number || !card.expiry || !card.cvv || !card.name) {
+      alert(lang==='FR'?'Veuillez remplir tous les champs de la carte':'Please fill all card fields');
+      return;
+    }
+    try {
+      const auth = getAuth();
+      const user = auth.currentUser;
+      if (!user) {
+        alert(lang==='FR'?'Vous devez être connecté':'You must be logged in');
+        return;
+      }
+      const response = await fetch('/api/payment/card/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cardNumber: card.number.replace(/\s/g, ''),
+          expiry: card.expiry,
+          cvv: card.cvv,
+          name: card.name,
+          amount: plan.price,
+          billing: billing,
+          recruiterId: user.uid, // on utilisera l'uid en attendant de récupérer l'id du recruteur
+          email: user.email,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Erreur lors du paiement');
+      }
+      if (data.mockConfirmed) {
+        // En mock, on simule une confirmation immédiate
+        alert(lang==='FR'?'✅ Paiement par carte simulé ! (mode mock)':'✅ Card payment simulated! (mock mode)');
+        setModal(false);
+        window.location.reload();
+      } else if (data.redirectUrl) {
+        // Rediriger vers la page de paiement (en production)
+        window.location.href = data.redirectUrl;
+      }
+    } catch (error) {
+      alert(error.message);
+    }
+  };
+
+  // ── Gestion Virement (transfer) ──
+  const handleTransferPayment = async () => {
+    if (!paymentRef.trim()) {
+      alert(lang==='FR'?'Veuillez entrer une référence de paiement':'Please enter a payment reference');
+      return;
+    }
+    try {
+      const auth = getAuth();
+      const user = auth.currentUser;
+      if (!user) {
+        alert(lang==='FR'?'Vous devez être connecté':'You must be logged in');
+        return;
+      }
+      await updatePlanStatus(db, user.uid, user.email, {
+        plan: 'pro',
+        planBilling: billing,
+        planRequestedAt: new Date().toISOString(),
+        planStatus: 'pending_confirmation',
+        paymentMethod: 'transfer',
+        paymentRef: paymentRef.trim(),
+      });
+      alert(lang==='FR'?'✅ Demande de virement enregistrée. Confirmation sous 24h.':'✅ Transfer request recorded. Confirmation within 24h.');
+      setModal(false);
+      window.location.reload();
+    } catch (error) {
+      alert(error.message);
+    }
+  };
+
+  // ── Rendu ──
+  return (
     <div style={{minHeight:"100vh",background:"#060d1a",fontFamily:"'DM Sans',system-ui,sans-serif",color:"#fff",overflowX:"hidden"}}>
       <div style={{position:"fixed",inset:0,backgroundImage:"linear-gradient(rgba(59,130,246,0.04) 1px,transparent 1px),linear-gradient(90deg,rgba(59,130,246,0.04) 1px,transparent 1px)",backgroundSize:"48px 48px",pointerEvents:"none"}}/>
       <div style={{position:"fixed",top:"-20%",left:"-10%",width:700,height:700,background:"radial-gradient(circle,rgba(59,130,246,0.1),transparent 60%)",pointerEvents:"none"}}/>
@@ -602,7 +731,14 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
         {modal&&(
           <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}
             style={{position:"fixed",inset:0,zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16,background:"rgba(6,13,26,0.88)",backdropFilter:"blur(14px)"}}
-            onClick={()=>setModal(false)}>
+            onClick={()=>{
+              setModal(false);
+              setCacStep('phone');
+              setCacOtp('');
+              setCacPhone('');
+              setCacTransactionId('');
+              setCacError('');
+            }}>
             <motion.div initial={{y:40,scale:0.96}} animate={{y:0,scale:1}} exit={{y:20,opacity:0}}
               onClick={e=>e.stopPropagation()}
               style={{background:"#0d1a2e",border:"1px solid rgba(59,130,246,0.2)",borderRadius:28,width:"100%",maxWidth:560,maxHeight:"92vh",overflow:"hidden",display:"flex",flexDirection:"column",boxShadow:"0 0 100px rgba(59,130,246,0.1),0 40px 80px rgba(0,0,0,0.7)",position:"relative"}}>
@@ -617,7 +753,14 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
                     {price} <span style={{fontSize:13,color:"rgba(255,255,255,0.4)",fontWeight:500}}>FDJ / {t.per[billing]}</span>
                   </p>
                 </div>
-                <button onClick={()=>setModal(false)} style={{width:34,height:34,borderRadius:10,background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:20,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+                <button onClick={()=>{
+                  setModal(false);
+                  setCacStep('phone');
+                  setCacOtp('');
+                  setCacPhone('');
+                  setCacTransactionId('');
+                  setCacError('');
+                }} style={{width:34,height:34,borderRadius:10,background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:20,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
               </div>
 
               <div style={{overflowY:"auto",padding:"24px 28px 32px"}}>
@@ -626,7 +769,16 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
                 {/* Method buttons */}
                 <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:28}}>
                   {paymentMethods.map(m=>(
-                    <button key={m.id} onClick={()=>setMethod(m.id)}
+                    <button key={m.id} onClick={()=>{
+                      setMethod(m.id);
+                      if (m.id === 'cac') {
+                        setCacStep('phone');
+                        setCacOtp('');
+                        setCacPhone('');
+                        setCacTransactionId('');
+                        setCacError('');
+                      }
+                    }}
                       style={{display:"flex",alignItems:"center",gap:14,padding:"14px 18px",borderRadius:14,border:`1px solid ${method===m.id?"rgba(59,130,246,0.5)":"rgba(255,255,255,0.07)"}`,background:method===m.id?"rgba(59,130,246,0.1)":"rgba(255,255,255,0.02)",cursor:"pointer",transition:"all 0.18s",textAlign:"left",width:"100%"}}>
                       <span style={{fontSize:24,flexShrink:0}}>{m.icon}</span>
                       <div style={{flex:1}}>
@@ -685,13 +837,18 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
                           </div>
                         </div>
                       </div>
+                      <button
+                        onClick={handleCardPayment}
+                        style={{width:"100%",marginTop:20,padding:"16px",borderRadius:14,border:"none",background:"linear-gradient(135deg,#3b82f6,#6366f1)",color:"#fff",fontSize:13,fontWeight:900,textTransform:"uppercase",letterSpacing:"1.5px",cursor:"pointer",boxShadow:"0 8px 24px rgba(59,130,246,0.3)"}}>
+                        {t.payBtn(price)}
+                      </button>
                     </motion.div>
                   )}
 
                   {/* CAC */}
                   {method==="cac"&&pricing.cacEnabled&&(
                     <motion.div key="cac" initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} exit={{opacity:0}}>
-                      <div style={{background:"rgba(59,130,246,0.07)",border:"1px solid rgba(59,130,246,0.2)",borderRadius:18,padding:"28px 24px",textAlign:"center"}}>
+                      <div style={{background:"rgba(59,130,246,0.07)",border:"1px solid rgba(59,130,246,0.2)",borderRadius:18,padding:"24px",textAlign:"center"}}>
                         <div style={{fontSize:52,marginBottom:12}}>📱</div>
                         <h3 style={{fontSize:20,fontWeight:900,color:"#fff",margin:"0 0 10px"}}>{t.cacTitle}</h3>
                         <p style={{color:"rgba(255,255,255,0.4)",fontSize:13,lineHeight:1.7,margin:"0 0 24px"}}>{t.cacDesc(price)}</p>
@@ -704,7 +861,61 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
                             {copied==="cac"?t.copied:t.copy}
                           </button>
                         </div>
-                        <div style={{background:"rgba(59,130,246,0.08)",borderRadius:10,padding:"12px 16px",display:"flex",gap:10,textAlign:"left"}}>
+
+                        {/* Formulaire CAC Pay : deux étapes */}
+                        {cacStep === 'phone' ? (
+                          <>
+                            <div style={{margin:"12px 0 16px"}}>
+                              <label style={{display:"block",fontSize:10,fontWeight:800,textTransform:"uppercase",letterSpacing:"1.5px",color:"rgba(255,255,255,0.4)",marginBottom:8}}>
+                                {lang==="FR"?"Numéro de téléphone":"Phone number"}
+                              </label>
+                              <input
+                                type="tel"
+                                value={cacPhone}
+                                onChange={e=>setCacPhone(e.target.value)}
+                                placeholder="77 00 00 00"
+                                style={{width:"100%",background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:12,padding:"12px 16px",color:"#fff",fontSize:14,outline:"none",boxSizing:"border-box"}}
+                              />
+                            </div>
+                            {cacError && <p style={{color:"#f87171",fontSize:12,margin:"-8px 0 12px"}}>{cacError}</p>}
+                            <button
+                              onClick={initiateCacPayment}
+                              disabled={cacLoading || !cacPhone.trim()}
+                              style={{width:"100%",padding:"14px",borderRadius:14,border:"none",background:cacLoading || !cacPhone.trim()?"rgba(255,255,255,0.08)":"linear-gradient(135deg,#3b82f6,#6366f1)",color:cacLoading || !cacPhone.trim()?"rgba(255,255,255,0.3)":"#fff",fontSize:13,fontWeight:900,textTransform:"uppercase",letterSpacing:"1.5px",cursor:cacLoading || !cacPhone.trim()?"not-allowed":"pointer",transition:"all 0.2s"}}>
+                              {cacLoading ? (lang==="FR"?"Envoi...":"Sending...") : (lang==="FR"?"📲 Recevoir le code OTP":"📲 Get OTP code")}
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <div style={{margin:"12px 0 16px"}}>
+                              <label style={{display:"block",fontSize:10,fontWeight:800,textTransform:"uppercase",letterSpacing:"1.5px",color:"rgba(255,255,255,0.4)",marginBottom:8}}>
+                                {lang==="FR"?"Code OTP reçu par SMS":"OTP code received by SMS"}
+                              </label>
+                              <input
+                                type="text"
+                                value={cacOtp}
+                                onChange={e=>setCacOtp(e.target.value.replace(/\D/g,""))}
+                                placeholder="123456"
+                                maxLength={6}
+                                style={{width:"100%",background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.12)",borderRadius:12,padding:"12px 16px",color:"#fff",fontSize:14,fontFamily:"monospace",letterSpacing:"4px",outline:"none",boxSizing:"border-box"}}
+                              />
+                            </div>
+                            {cacError && <p style={{color:"#f87171",fontSize:12,margin:"-8px 0 12px"}}>{cacError}</p>}
+                            <button
+                              onClick={confirmCacPayment}
+                              disabled={cacLoading || !cacOtp.trim()}
+                              style={{width:"100%",padding:"14px",borderRadius:14,border:"none",background:cacLoading || !cacOtp.trim()?"rgba(255,255,255,0.08)":"linear-gradient(135deg,#22c55e,#16a34a)",color:cacLoading || !cacOtp.trim()?"rgba(255,255,255,0.3)":"#fff",fontSize:13,fontWeight:900,textTransform:"uppercase",letterSpacing:"1.5px",cursor:cacLoading || !cacOtp.trim()?"not-allowed":"pointer",transition:"all 0.2s"}}>
+                              {cacLoading ? (lang==="FR"?"Vérification...":"Verifying...") : t.cacBtn}
+                            </button>
+                            <button
+                              onClick={()=>{setCacStep('phone');setCacOtp('');setCacError('');}}
+                              style={{marginTop:10,background:"none",border:"none",color:"rgba(255,255,255,0.3)",fontSize:11,cursor:"pointer",textDecoration:"underline"}}>
+                              {lang==="FR"?"← Retourner au numéro":"← Back to phone"}
+                            </button>
+                          </>
+                        )}
+
+                        <div style={{background:"rgba(59,130,246,0.08)",borderRadius:10,padding:"12px 16px",marginTop:16,display:"flex",gap:10,textAlign:"left"}}>
                           <span style={{fontSize:16,flexShrink:0}}>ℹ️</span>
                           <p style={{fontSize:12,color:"rgba(255,255,255,0.4)",margin:0,lineHeight:1.7}}>{t.cacNote} <strong style={{color:"#60a5fa"}}>{pricing.supportEmail}</strong></p>
                         </div>
@@ -742,59 +953,42 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
                   )}
                 </AnimatePresence>
 
-                {paymentMethods.length>0&&(
+                {paymentMethods.length>0 && (
                   <div style={{marginTop:20}}>
-                    {/* Payment reference input */}
-                    <div style={{marginBottom:12}}>
-                      <label style={{display:"block",fontSize:10,fontWeight:800,textTransform:"uppercase",letterSpacing:"1.5px",color:"rgba(255,255,255,0.4)",marginBottom:8}}>
-                        {lang==="FR"?"📎 Référence de paiement *":"📎 Payment reference *"}
-                      </label>
-                      <input
-                        type="text"
-                        value={paymentRef}
-                        onChange={e=>setPaymentRef(e.target.value)}
-                        placeholder={
-                          method==="cac"
-                            ? (lang==="FR"?"Ex: CAC-2025-78432 ou numéro de transaction":"Ex: CAC-2025-78432 or transaction number")
-                            : method==="transfer"
-                              ? (lang==="FR"?"Ex: VIR-BCI-20250607-001":"Ex: VIR-BCI-20250607-001")
-                              : (lang==="FR"?"Ex: REF-CARD-20250607":"Ex: REF-CARD-20250607")
-                        }
-                        style={{width:"100%",background:"rgba(255,255,255,0.06)",border:`1px solid ${paymentRef.trim()?"rgba(59,130,246,0.5)":"rgba(255,255,255,0.12)"}`,borderRadius:12,padding:"12px 16px",color:"#fff",fontSize:13,fontWeight:600,outline:"none",boxSizing:"border-box",transition:"border-color 0.2s",letterSpacing:"0.5px"}}
-                      />
-                      <p style={{fontSize:10,color:"rgba(255,255,255,0.25)",marginTop:5,fontStyle:"italic"}}>
-                        {lang==="FR"
-                          ? "Cette référence sera transmise à l'admin pour valider votre paiement."
-                          : "This reference will be sent to the admin to validate your payment."}
-                      </p>
-                    </div>
+                    {/* Payment reference input pour les méthodes autres que CAC (pour CAC, on gère l'OTP) */}
+                    {method !== 'cac' && (
+                      <div style={{marginBottom:12}}>
+                        <label style={{display:"block",fontSize:10,fontWeight:800,textTransform:"uppercase",letterSpacing:"1.5px",color:"rgba(255,255,255,0.4)",marginBottom:8}}>
+                          {lang==="FR"?"📎 Référence de paiement *":"📎 Payment reference *"}
+                        </label>
+                        <input
+                          type="text"
+                          value={paymentRef}
+                          onChange={e=>setPaymentRef(e.target.value)}
+                          placeholder={
+                            method==="card"
+                              ? (lang==="FR"?"Ex: REF-CARD-20250607":"Ex: REF-CARD-20250607")
+                              : (lang==="FR"?"Ex: VIR-BCI-20250607-001":"Ex: VIR-BCI-20250607-001")
+                          }
+                          style={{width:"100%",background:"rgba(255,255,255,0.06)",border:`1px solid ${paymentRef.trim()?"rgba(59,130,246,0.5)":"rgba(255,255,255,0.12)"}`,borderRadius:12,padding:"12px 16px",color:"#fff",fontSize:13,fontWeight:600,outline:"none",boxSizing:"border-box",transition:"border-color 0.2s",letterSpacing:"0.5px"}}
+                        />
+                        <p style={{fontSize:10,color:"rgba(255,255,255,0.25)",marginTop:5,fontStyle:"italic"}}>
+                          {lang==="FR"
+                            ? "Cette référence sera transmise à l'admin pour valider votre paiement."
+                            : "This reference will be sent to the admin to validate your payment."}
+                        </p>
+                      </div>
+                    )}
 
-                    <button
-                      disabled={!paymentRef.trim()}
-                      onClick={async ()=>{
-                        if (!paymentRef.trim()) return;
-                        try {
-                          const authInst = getAuth();
-                          const currentUser = authInst.currentUser;
-                          if (!currentUser) { alert(lang==="FR"?"Non connecté":"Not logged in"); return; }
-                          await updatePlanStatus(db, currentUser.uid, currentUser.email, {
-                            plan: 'pro',
-                            planBilling: billing,
-                            planRequestedAt: new Date().toISOString(),
-                            planStatus: 'pending_confirmation',
-                            paymentMethod: method,
-                            paymentRef: paymentRef.trim(),
-                          });
-                          setPaymentRef("");
-                          alert(lang==="FR"?"✅ Paiement initié — confirmation par email sous 24h.":"✅ Payment initiated — confirmation by email within 24h.");
-                        } catch(e) {
-                          console.error('Payment error:', e);
-                          alert(lang==="FR"?"Erreur. Contactez Vedior GM.":"Error. Contact Vedior GM.");
-                        }
-                      }}
-                      style={{width:"100%",padding:"16px",borderRadius:14,border:"none",background:paymentRef.trim()?"linear-gradient(135deg,#3b82f6,#6366f1)":"rgba(255,255,255,0.08)",color:paymentRef.trim()?"#fff":"rgba(255,255,255,0.3)",fontSize:13,fontWeight:900,textTransform:"uppercase",letterSpacing:"1.5px",cursor:paymentRef.trim()?"pointer":"not-allowed",boxShadow:paymentRef.trim()?"0 8px 24px rgba(59,130,246,0.3)":"none",transition:"all 0.2s"}}>
-                      {method==="card"?t.payBtn(price):method==="transfer"?(lang==="FR"?"✅ J\'ai effectué le virement":"✅ I\'ve made the transfer"):t.cacBtn}
-                    </button>
+                    {/* Bouton de confirmation pour les méthodes non-CAC */}
+                    {method !== 'cac' && (
+                      <button
+                        disabled={!paymentRef.trim() && method !== 'card'}
+                        onClick={method === 'card' ? handleCardPayment : handleTransferPayment}
+                        style={{width:"100%",padding:"16px",borderRadius:14,border:"none",background:(paymentRef.trim() || method === 'card')?"linear-gradient(135deg,#3b82f6,#6366f1)":"rgba(255,255,255,0.08)",color:(paymentRef.trim() || method === 'card')?"#fff":"rgba(255,255,255,0.3)",fontSize:13,fontWeight:900,textTransform:"uppercase",letterSpacing:"1.5px",cursor:(paymentRef.trim() || method === 'card')?"pointer":"not-allowed",boxShadow:(paymentRef.trim() || method === 'card')?"0 8px 24px rgba(59,130,246,0.3)":"none",transition:"all 0.2s"}}>
+                        {method==="card"?t.payBtn(price):method==="transfer"?(lang==="FR"?"✅ J'ai effectué le virement":"✅ I've made the transfer"):t.payBtn(price)}
+                      </button>
+                    )}
                   </div>
                 )}
                 <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginTop:14,opacity:0.3}}>
@@ -808,3 +1002,35 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
     </div>
   );
 }
+
+// ─── Helpers ───
+const fmtCard = (v) => v.replace(/\D/g,"").slice(0,16).replace(/(.{4})/g,"$1 ").trim();
+const fmtExp = (v) => {
+  const d = v.replace(/\D/g,"").slice(0,4);
+  return d.length>=3 ? d.slice(0,2)+"/"+d.slice(2) : d;
+};
+
+const DEFAULT_PRICING = {
+  monthlyPrice: 15000,
+  quarterlyPrice: 39000,
+  yearlyPrice: 144000,
+  freeJobsLimit: 1,
+  freeApplicationsLimit: 5,
+  freeRequestsLimit: 1,
+  proJobsLimit: -1,
+  cacNumber: "+253 77 XX XX XX",
+  cacEnabled: true,
+  bankName: "Banque Centrale de Djibouti (BCD)",
+  bankHolder: "Vedior GM SARL",
+  bankAccount: "DJ 01 0001 0000 XXXX XXXX XXXX",
+  bankIban: "DJ 01 0001 0000 XXXX XXXX XXXX",
+  bankBic: "BCDIJDJA",
+  bankEnabled: true,
+  cardEnabled: true,
+  cardProvider: "Mock",
+  cardPublicKey: "",
+  cardSecretKeyEnv: "PAYMENT_SECRET_KEY",
+  cardCheckoutUrl: "",
+  cardWebhookUrl: "",
+  supportEmail: "support@vedior-gm.dj",
+};
