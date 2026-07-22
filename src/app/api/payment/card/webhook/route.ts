@@ -2,23 +2,23 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
-import { initializeApp, getApps, cert } from 'firebase-admin/app';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 
-if (!getApps().length) {
-  initializeApp({
-    credential: cert({
-      projectId: process.env.FIREBASE_PROJECT_ID || 'vediorgm',
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.ADMIN_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    }),
-  });
+function getDb() {
+  const { initializeApp, getApps, cert } = require('firebase-admin/app');
+  const { getFirestore } = require('firebase-admin/firestore');
+  if (!getApps().length) {
+    initializeApp({
+      credential: cert({
+        projectId: process.env.FIREBASE_PROJECT_ID || 'vediorgm',
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey: process.env.ADMIN_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+      }),
+    });
+  }
+  return getFirestore();
 }
-const db = getFirestore();
 
-const PLAN_DURATIONS: Record<string, number> = {
-  monthly: 30, quarterly: 90, annual: 365,
-};
+const PLAN_DURATIONS: Record<string, number> = { monthly: 30, quarterly: 90, annual: 365 };
 
 export async function POST(req: NextRequest) {
   try {
@@ -28,12 +28,12 @@ export async function POST(req: NextRequest) {
     const webhookSecret = process.env.CARD_WEBHOOK_SECRET;
     if (webhookSecret) {
       const signature = req.headers.get('x-webhook-signature') || req.headers.get('stripe-signature');
-      if (!signature) {
-        return NextResponse.json({ error: 'Signature manquante' }, { status: 401 });
-      }
+      if (!signature) return NextResponse.json({ error: 'Signature manquante' }, { status: 401 });
     }
 
-    if (event === 'payment.success' || event === 'checkout.session.completed' || event === 'payment_intent.succeeded') {
+    if (['payment.success', 'checkout.session.completed', 'payment_intent.succeeded'].includes(event)) {
+      const { FieldValue } = require('firebase-admin/firestore');
+      const db = getDb();
       const recruiterId = data?.metadata?.recruiterId || data?.recruiterId;
       const plan = data?.metadata?.plan || data?.plan || 'pro';
       const billingCycle = data?.metadata?.billingCycle || data?.billing_cycle || 'monthly';
@@ -46,30 +46,27 @@ export async function POST(req: NextRequest) {
         expiry.setDate(expiry.getDate() + durationDays);
         const expiryStr = expiry.toISOString().split('T')[0];
 
-        const recruitersSnap = await db.collection('recruiters').where('uid', '==', recruiterId).limit(1).get();
-        if (!recruitersSnap.empty) {
+        const snap = await db.collection('recruiters').where('uid', '==', recruiterId).limit(1).get();
+        if (!snap.empty) {
           const batch = db.batch();
-          batch.update(recruitersSnap.docs[0].ref, {
+          batch.update(snap.docs[0].ref, {
             plan: 'pro', planStatus: 'active', planExpiry: expiryStr,
             planBillingCycle: billingCycle, planActivatedAt: new Date().toISOString(),
           });
-          const paymentRef = db.collection('payments').doc();
-          batch.set(paymentRef, {
+          batch.set(db.collection('payments').doc(), {
             recruiterId, transactionId, amount: amount / 100,
             plan, billingCycle, method: 'card', status: 'success',
             planExpiry: expiryStr, webhookEvent: event,
             createdAt: FieldValue.serverTimestamp(),
           });
           await batch.commit();
-          console.log(`[Webhook] Plan Pro activé pour ${recruiterId} jusqu'au ${expiryStr}`);
         }
       }
     }
 
     return NextResponse.json({ received: true });
-
   } catch (err: any) {
-    console.error('[Card Webhook] Erreur:', err);
+    console.error('[Card Webhook]', err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
