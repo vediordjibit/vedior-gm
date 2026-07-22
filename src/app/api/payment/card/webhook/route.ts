@@ -1,5 +1,4 @@
 // src/app/api/payment/card/webhook/route.ts
-// Reçoit les webhooks de confirmation de paiement carte
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -11,16 +10,14 @@ if (!getApps().length) {
     credential: cert({
       projectId: process.env.FIREBASE_PROJECT_ID || 'vediorgm',
       clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+      privateKey: process.env.ADMIN_PRIVATE_KEY?.replace(/\\n/g, '\n'),
     }),
   });
 }
 const db = getFirestore();
 
 const PLAN_DURATIONS: Record<string, number> = {
-  monthly: 30,
-  quarterly: 90,
-  annual: 365,
+  monthly: 30, quarterly: 90, annual: 365,
 };
 
 export async function POST(req: NextRequest) {
@@ -28,17 +25,14 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { event, data } = body;
 
-    // Vérifier la signature webhook (à implémenter selon la banque)
     const webhookSecret = process.env.CARD_WEBHOOK_SECRET;
     if (webhookSecret) {
       const signature = req.headers.get('x-webhook-signature') || req.headers.get('stripe-signature');
       if (!signature) {
         return NextResponse.json({ error: 'Signature manquante' }, { status: 401 });
       }
-      // TODO: vérifier la signature selon le prestataire
     }
 
-    // Événement de paiement réussi
     if (event === 'payment.success' || event === 'checkout.session.completed' || event === 'payment_intent.succeeded') {
       const recruiterId = data?.metadata?.recruiterId || data?.recruiterId;
       const plan = data?.metadata?.plan || data?.plan || 'pro';
@@ -52,36 +46,20 @@ export async function POST(req: NextRequest) {
         expiry.setDate(expiry.getDate() + durationDays);
         const expiryStr = expiry.toISOString().split('T')[0];
 
-        const recruitersSnap = await db.collection('recruiters')
-          .where('uid', '==', recruiterId)
-          .limit(1)
-          .get();
-
+        const recruitersSnap = await db.collection('recruiters').where('uid', '==', recruiterId).limit(1).get();
         if (!recruitersSnap.empty) {
           const batch = db.batch();
-
           batch.update(recruitersSnap.docs[0].ref, {
-            plan: 'pro',
-            planStatus: 'active',
-            planExpiry: expiryStr,
-            planBillingCycle: billingCycle,
-            planActivatedAt: new Date().toISOString(),
+            plan: 'pro', planStatus: 'active', planExpiry: expiryStr,
+            planBillingCycle: billingCycle, planActivatedAt: new Date().toISOString(),
           });
-
           const paymentRef = db.collection('payments').doc();
           batch.set(paymentRef, {
-            recruiterId,
-            transactionId,
-            amount: amount / 100, // centimes → unités
-            plan,
-            billingCycle,
-            method: 'card',
-            status: 'success',
-            planExpiry: expiryStr,
-            webhookEvent: event,
+            recruiterId, transactionId, amount: amount / 100,
+            plan, billingCycle, method: 'card', status: 'success',
+            planExpiry: expiryStr, webhookEvent: event,
             createdAt: FieldValue.serverTimestamp(),
           });
-
           await batch.commit();
           console.log(`[Webhook] Plan Pro activé pour ${recruiterId} jusqu'au ${expiryStr}`);
         }

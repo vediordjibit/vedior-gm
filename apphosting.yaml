@@ -20,3 +20,7 @@ env:
     secret: ADMIN_SDK_KEY
     availability:
       - RUNTIME
+  - variable: ADMIN_CLIENT_EMAIL
+    secret: FIREBASE_CLIENT_EMAIL
+  - variable: ADMIN_PRIVATE_KEY
+    secret: FIREBASE_PRIVATE_KEY

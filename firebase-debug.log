@@ -1,0 +1,85 @@
+[debug] [2026-07-22T08:59:54.657Z] ----------------------------------------------------------------------
+[debug] [2026-07-22T08:59:54.659Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\Ardo_Travel\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js deploy --only hosting
+[debug] [2026-07-22T08:59:54.659Z] CLI Version:   15.24.0
+[debug] [2026-07-22T08:59:54.659Z] Platform:      win32
+[debug] [2026-07-22T08:59:54.660Z] Node Version:  v24.15.0
+[debug] [2026-07-22T08:59:54.660Z] Detected Agent: unknown
+[debug] [2026-07-22T08:59:54.660Z] Time:          Wed Jul 22 2026 11:59:54 GMT+0300 (Arabian Standard Time)
+[debug] [2026-07-22T08:59:54.660Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-07-22T08:59:59.760Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-07-22T08:59:59.760Z] > authorizing via signed-in user (vediordjib.it@gmail.com)
+[debug] [2026-07-22T08:59:59.760Z] [iam] checking project vediorgm for permissions ["firebase.projects.get","firebasehosting.sites.update"]
+[debug] [2026-07-22T08:59:59.773Z] Checked if tokens are valid: true, expires at: 1784713729870
+[debug] [2026-07-22T08:59:59.773Z] Checked if tokens are valid: true, expires at: 1784713729870
+[debug] [2026-07-22T08:59:59.774Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/vediorgm:testIamPermissions [none]
+[debug] [2026-07-22T08:59:59.774Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/vediorgm:testIamPermissions  x-goog-user-project=vediorgm
+[debug] [2026-07-22T08:59:59.774Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/vediorgm:testIamPermissions {"permissions":["firebase.projects.get","firebasehosting.sites.update"]}
+[debug] [2026-07-22T09:00:01.446Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/vediorgm:testIamPermissions 200
+[debug] [2026-07-22T09:00:01.447Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/vediorgm:testIamPermissions {"permissions":["firebase.projects.get","firebasehosting.sites.update"]}
+[debug] [2026-07-22T09:00:01.447Z] Checked if tokens are valid: true, expires at: 1784713729870
+[debug] [2026-07-22T09:00:01.447Z] Checked if tokens are valid: true, expires at: 1784713729870
+[debug] [2026-07-22T09:00:01.447Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/vediorgm [none]
+[debug] [2026-07-22T09:00:02.070Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/vediorgm 200
+[debug] [2026-07-22T09:00:02.070Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/vediorgm {"projectId":"vediorgm","projectNumber":"790538302349","displayName":"VediorGM","name":"projects/vediorgm","resources":{"hostingSite":"vediorgm"},"state":"ACTIVE","labels":{"firebase":"enabled","firebase/storage-default-bucket":"created"},"etag":"1_d8550b29-0a17-4931-b7dd-b6421c32d42f"}
+[debug] [2026-07-22T09:00:06.391Z] defaultcredentials: writing to file C:\Users\Ardo_Travel\AppData\Roaming\firebase\vediordjib_it_gmail.com_application_default_credentials.json
+[debug] [2026-07-22T09:00:06.393Z] Checked if tokens are valid: true, expires at: 1784713729870
+[debug] [2026-07-22T09:00:06.393Z] Checked if tokens are valid: true, expires at: 1784713729870
+[debug] [2026-07-22T09:00:06.393Z] >>> [apiv2][query] GET https://firebasehosting.googleapis.com/v1beta1/projects/vediorgm/sites pageToken=&pageSize=10
+[debug] [2026-07-22T09:00:09.425Z] <<< [apiv2][status] GET https://firebasehosting.googleapis.com/v1beta1/projects/vediorgm/sites 200
+[debug] [2026-07-22T09:00:09.425Z] <<< [apiv2][body] GET https://firebasehosting.googleapis.com/v1beta1/projects/vediorgm/sites {"sites":[{"name":"projects/vediorgm/sites/vediorgm","defaultUrl":"https://vediorgm.web.app","appId":"1:790538302349:web:a01881c1f0a155abd0c3c4","type":"DEFAULT_SITE"}]}
+[debug] [2026-07-22T09:00:09.425Z] Checked if tokens are valid: true, expires at: 1784713729870
+[debug] [2026-07-22T09:00:09.425Z] Checked if tokens are valid: true, expires at: 1784713729870
+[debug] [2026-07-22T09:00:09.425Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/-/webApps/1:790538302349:web:a01881c1f0a155abd0c3c4/config [none]
+[debug] [2026-07-22T09:00:10.733Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/-/webApps/1:790538302349:web:a01881c1f0a155abd0c3c4/config 200
+[debug] [2026-07-22T09:00:10.733Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/-/webApps/1:790538302349:web:a01881c1f0a155abd0c3c4/config {"projectId":"vediorgm","appId":"1:790538302349:web:a01881c1f0a155abd0c3c4","storageBucket":"vediorgm.firebasestorage.app","apiKey":"AIzaSyCjb-2sd5jgoUt7U-E3lWTQnuuX7xO0GPs","authDomain":"vediorgm.firebaseapp.com","messagingSenderId":"790538302349","measurementId":"G-PG14QW7893","projectNumber":"790538302349","version":"2"}
+[info] 
+   Thank you for trying our early preview of Next.js support on Firebase Hosting.
+   During the preview, support is best-effort and breaking changes can be expected. Proceed with caution.
+   The integration is known to work with Next.js version 12 - 16.0. You may encounter errors.
+
+   Documentation: https://firebase.google.com/docs/hosting/frameworks/nextjs
+   File a bug: https://github.com/firebase/firebase-tools/issues/new?template=bug_report.md
+   Submit a feature request: https://github.com/firebase/firebase-tools/issues/new?template=feature_request.md
+
+   We'd love to learn from you. Express your interest in helping us shape the future of Firebase Hosting: https://goo.gle/41enW5X
+
+[debug] [2026-07-22T09:00:16.868Z] Checked if tokens are valid: true, expires at: 1784713729870
+[debug] [2026-07-22T09:00:16.868Z] Checked if tokens are valid: true, expires at: 1784713729870
+[debug] [2026-07-22T09:00:16.868Z] >>> [apiv2][query] GET https://firebasehosting.googleapis.com/v1beta1/projects/vediorgm/sites/vediorgm [none]
+[debug] [2026-07-22T09:00:18.679Z] <<< [apiv2][status] GET https://firebasehosting.googleapis.com/v1beta1/projects/vediorgm/sites/vediorgm 200
+[debug] [2026-07-22T09:00:18.679Z] <<< [apiv2][body] GET https://firebasehosting.googleapis.com/v1beta1/projects/vediorgm/sites/vediorgm {"name":"projects/vediorgm/sites/vediorgm","defaultUrl":"https://vediorgm.web.app","appId":"1:790538302349:web:a01881c1f0a155abd0c3c4","type":"DEFAULT_SITE"}
+[info] ▲ Next.js 16.2.6 (Turbopack)
+
+[info] - Environments: .env.local, .env.production
+
+
+[info]   Creating an optimized production build ...
+
+[info] ✓ Compiled successfully in 5.1s
+
+[info]   Running TypeScript ...
+
+[info]   Finished TypeScript in 8.9s ...
+
+[info]   Collecting page data using 11 workers ...
+
+[info] ⚠ Using edge runtime on a page currently disables static generation for that page
+
+[info] Error: Service account object must contain a string "private_key" property.
+    at <unknown> (C:\vedior-gm-clean\.next\server\chunks\[root-of-the-server]__0yd1ut5._.js:1:1276) {
+  code: 'app/invalid-credential',
+  codePrefix: 'app'
+}
+
+[info] 
+> Build error occurred
+
+[info] Error: Failed to collect page data for /api/payment/cac/confirm
+    at ignore-listed frames {
+  type: 'Error'
+}
+
+[debug] [2026-07-22T09:00:38.146Z] Error: ENOENT: no such file or directory, open 'C:\vedior-gm-clean\.next\export-marker.json'
+[error] 
+[error] Error: An unexpected error has occurred.
