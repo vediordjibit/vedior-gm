@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   verifyPasswordResetCode,
@@ -11,7 +11,7 @@ import { auth } from '../../lib/firebase';
 
 type Status = 'loading' | 'ready' | 'submitting' | 'success' | 'error' | 'verify-success' | 'verify-error';
 
-export default function AuthActionPage() {
+function AuthActionContent() {
   const searchParams = useSearchParams();
   const mode = searchParams?.get('mode') ?? null;
   const oobCode = searchParams?.get('oobCode') ?? null;
@@ -155,9 +155,7 @@ export default function AuthActionPage() {
                   placeholder="••••••••"
                   disabled={status === 'submitting'}
                 />
-                {errorMsg && (
-                  <p style={styles.error}>{errorMsg}</p>
-                )}
+                {errorMsg && <p style={styles.error}>{errorMsg}</p>}
                 <button
                   type="submit"
                   style={{
@@ -179,6 +177,27 @@ export default function AuthActionPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function AuthActionPage() {
+  return (
+    <Suspense fallback={
+      <div style={styles.page}>
+        <div style={styles.card}>
+          <div style={styles.header}>
+            <div style={styles.logo}>VEDIOR GM</div>
+            <div style={styles.tagline}>RECRUTEMENT · DJIBOUTI</div>
+            <div style={styles.accentBar} />
+          </div>
+          <div style={styles.body}>
+            <p style={styles.text}>Chargement...</p>
+          </div>
+        </div>
+      </div>
+    }>
+      <AuthActionContent />
+    </Suspense>
   );
 }
 
