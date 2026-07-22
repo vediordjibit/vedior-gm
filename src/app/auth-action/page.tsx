@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
-  getAuth,
   verifyPasswordResetCode,
   confirmPasswordReset,
   applyActionCode,
@@ -100,7 +99,7 @@ export default function AuthActionPage() {
             <>
               <h1 style={styles.title}>Lien invalide</h1>
               <p style={styles.text}>{errorMsg}</p>
-              <a href="/login" style={styles.button}>Retour à la connexion</a>
+              <a href="/" style={styles.button}>Retour à la connexion</a>
             </>
           )}
 
@@ -108,7 +107,7 @@ export default function AuthActionPage() {
             <>
               <h1 style={styles.title}>Email vérifié ✅</h1>
               <p style={styles.text}>Votre adresse email a été confirmée avec succès.</p>
-              <a href="/candidate" style={styles.button}>Accéder à mon espace →</a>
+              <a href="/" style={styles.button}>Accéder à mon espace →</a>
             </>
           )}
 
@@ -116,7 +115,17 @@ export default function AuthActionPage() {
             <>
               <h1 style={styles.title}>Lien invalide</h1>
               <p style={styles.text}>{errorMsg}</p>
-              <a href="/candidate" style={styles.button}>Accéder à mon espace</a>
+              <a href="/" style={styles.button}>Accéder à mon espace</a>
+            </>
+          )}
+
+          {status === 'success' && (
+            <>
+              <h1 style={styles.title}>Mot de passe défini ✅</h1>
+              <p style={styles.text}>
+                Votre mot de passe a été mis à jour avec succès. Vous pouvez maintenant vous connecter.
+              </p>
+              <a href="/" style={styles.button}>Se connecter →</a>
             </>
           )}
 
@@ -146,22 +155,25 @@ export default function AuthActionPage() {
                   placeholder="••••••••"
                   disabled={status === 'submitting'}
                 />
+                {errorMsg && (
+                  <p style={styles.error}>{errorMsg}</p>
+                )}
                 <button
                   type="submit"
-                  style={styles.submitButton}
+                  style={{
+                    ...styles.button,
+                    opacity: status === 'submitting' ? 0.7 : 1,
+                    cursor: status === 'submitting' ? 'not-allowed' : 'pointer',
+                    border: 'none',
+                    width: '100%',
+                    textAlign: 'center',
+                    marginTop: 8,
+                  }}
                   disabled={status === 'submitting'}
                 >
-                  {status === 'submitting' ? 'En cours...' : 'Mettre à jour'}
+                  {status === 'submitting' ? 'Enregistrement...' : 'Définir mon mot de passe →'}
                 </button>
               </form>
-            </>
-          )}
-
-          {status === 'success' && (
-            <>
-              <h1 style={styles.title}>Mot de passe mis à jour ✅</h1>
-              <p style={styles.text}>Votre mot de passe a été changé avec succès.</p>
-              <a href="/candidate" style={styles.button}>Accéder à mon espace →</a>
             </>
           )}
         </div>
@@ -170,110 +182,105 @@ export default function AuthActionPage() {
   );
 }
 
-const styles: { [key: string]: React.CSSProperties } = {
+const styles: Record<string, React.CSSProperties> = {
   page: {
     minHeight: '100vh',
-    backgroundColor: '#F0F2F8',
+    background: '#F1F5F9',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
+    fontFamily: 'Arial, sans-serif',
     padding: '20px',
-    fontFamily: '"DM Sans", system-ui, sans-serif',
   },
   card: {
-    maxWidth: '480px',
-    width: '100%',
-    backgroundColor: 'white',
-    borderRadius: '24px',
-    boxShadow: '0 20px 60px rgba(0,0,0,0.10)',
+    background: '#ffffff',
+    borderRadius: 16,
     overflow: 'hidden',
+    boxShadow: '0 4px 24px rgba(0,0,0,0.08)',
+    width: '100%',
+    maxWidth: 480,
   },
   header: {
-    padding: '40px 32px 24px',
-    backgroundColor: '#0A192F',
-    color: 'white',
+    background: '#0A192F',
+    padding: '36px 48px',
     textAlign: 'center',
   },
   logo: {
-    fontSize: '28px',
-    fontWeight: 900,
-    letterSpacing: '2px',
-    color: '#f97316',
+    fontSize: 22,
+    fontWeight: 800,
+    color: '#ffffff',
+    letterSpacing: '-0.5px',
   },
   tagline: {
-    fontSize: '10px',
-    fontWeight: 700,
-    letterSpacing: '3px',
-    color: 'rgba(255,255,255,0.5)',
-    marginTop: '6px',
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.4)',
+    letterSpacing: 3,
+    textTransform: 'uppercase',
+    marginTop: 4,
   },
   accentBar: {
-    width: '60px',
-    height: '4px',
-    backgroundColor: '#f97316',
+    width: 40,
+    height: 3,
+    background: '#00A3E0',
+    borderRadius: 2,
     margin: '16px auto 0',
-    borderRadius: '2px',
   },
   body: {
-    padding: '32px 32px 40px',
+    padding: '40px 48px',
   },
   title: {
-    fontSize: '22px',
-    fontWeight: 900,
+    fontSize: 22,
+    fontWeight: 800,
     color: '#0A192F',
     margin: '0 0 12px',
+    letterSpacing: '-0.5px',
   },
   text: {
-    fontSize: '14px',
-    color: '#4a5568',
-    lineHeight: '1.6',
-    margin: '0 0 8px',
+    fontSize: 14,
+    color: '#64748B',
+    lineHeight: 1.7,
+    margin: '0 0 24px',
   },
   label: {
     display: 'block',
-    fontSize: '12px',
+    fontSize: 11,
     fontWeight: 700,
-    color: '#4a5568',
-    marginBottom: '6px',
-    marginTop: '16px',
+    color: '#64748B',
     textTransform: 'uppercase',
-    letterSpacing: '0.5px',
+    letterSpacing: '1px',
+    marginBottom: 8,
+    marginTop: 16,
   },
   input: {
     width: '100%',
-    padding: '12px 16px',
-    fontSize: '16px',
-    border: '1px solid #e2e8f0',
-    borderRadius: '12px',
+    padding: '14px 16px',
+    border: '1px solid #E2E8F0',
+    borderRadius: 10,
+    fontSize: 15,
+    color: '#0A192F',
     outline: 'none',
-    transition: 'border-color 0.2s',
     boxSizing: 'border-box',
-  },
-  submitButton: {
-    width: '100%',
-    padding: '14px',
-    marginTop: '24px',
-    backgroundColor: '#f97316',
-    color: 'white',
-    border: 'none',
-    borderRadius: '12px',
-    fontSize: '16px',
-    fontWeight: 700,
-    cursor: 'pointer',
-    transition: 'background-color 0.2s',
+    background: '#F8FAFC',
   },
   button: {
     display: 'inline-block',
-    padding: '12px 24px',
-    marginTop: '16px',
-    backgroundColor: '#0A192F',
-    color: 'white',
+    background: '#00A3E0',
+    color: '#ffffff',
     textDecoration: 'none',
-    borderRadius: '12px',
-    fontWeight: 700,
-    fontSize: '14px',
-    textAlign: 'center',
-    border: 'none',
-    cursor: 'pointer',
+    padding: '14px 32px',
+    borderRadius: 10,
+    fontWeight: 800,
+    fontSize: 14,
+    letterSpacing: '0.5px',
+    marginTop: 24,
+  },
+  error: {
+    color: '#EF4444',
+    fontSize: 13,
+    marginTop: 12,
+    padding: '10px 14px',
+    background: '#FEF2F2',
+    borderRadius: 8,
+    border: '1px solid #FECACA',
   },
 };

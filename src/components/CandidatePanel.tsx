@@ -15,15 +15,16 @@ import { getStorage, ref, uploadBytesResumable, getDownloadURL } from 'firebase/
 import { useTranslation } from '../lib/i18n';
 import { useCompanyInfo } from '../lib/useCompanyInfo';
 import { 
-  collection, query, where, orderBy, onSnapshot, doc, setDoc, addDoc, serverTimestamp, updateDoc,
-  getDocs
+  collection, query, where, orderBy, onSnapshot, doc, setDoc, addDoc, serverTimestamp, updateDoc
 } from 'firebase/firestore';
 import { 
   signInWithPopup as authSignInWithPopup, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut,
   signInWithEmailAndPassword, createUserWithEmailAndPassword,
-  sendPasswordResetEmail, sendEmailVerification,
-  applyActionCode, verifyPasswordResetCode, confirmPasswordReset
+  sendPasswordResetEmail, sendEmailVerification
 } from 'firebase/auth';
+import {
+  getDocs
+} from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 
 const Logo = ({ inverted = false, size = "sm" }: { inverted?: boolean; size?: "sm" | "md" | "lg" }) => {
@@ -170,14 +171,6 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
   const [onboardingStep, setOnboardingStep] = useState(1);
   const [savingOnboarding, setSavingOnboarding] = useState(false);
 
-  // ── États pour la réinitialisation de mot de passe via lien ──
-  const [showResetForm, setShowResetForm] = useState(false);
-  const [resetCode, setResetCode] = useState('');
-  const [resetEmail, setResetEmail] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [resetConfirmPassword, setResetConfirmPassword] = useState('');
-  const [resetLoading, setResetLoading] = useState(false);
-
   const [profileForm, setProfileForm] = useState({
     fullName: '',
     nationality: 'Djiboutienne',
@@ -201,48 +194,6 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
   const onSignOutRef = React.useRef(onSignOut);
   const onBackRef = React.useRef(onBack);
   useEffect(() => { onSignOutRef.current = onSignOut; onBackRef.current = onBack; });
-
-  // ── Gestion des liens d'action Firebase (vérification email / réinitialisation) ──
-  useEffect(() => {
-    const handleActionCode = async () => {
-      const params = new URLSearchParams(window.location.search);
-      const mode = params.get('mode');
-      const oobCode = params.get('oobCode');
-
-      if (!mode || !oobCode) return;
-
-      try {
-        if (mode === 'verifyEmail') {
-          await applyActionCode(auth, oobCode);
-          if (auth.currentUser) {
-            await auth.currentUser.reload();
-          }
-          window.history.replaceState({}, '', window.location.pathname);
-          setNotification({
-            message: lang === 'FR' ? '✅ Email vérifié avec succès !' : '✅ Email verified successfully!',
-            type: 'success'
-          });
-          setTimeout(() => setNotification(null), 5000);
-        } 
-        else if (mode === 'resetPassword') {
-          const email = await verifyPasswordResetCode(auth, oobCode);
-          setResetCode(oobCode);
-          setResetEmail(email);
-          setShowResetForm(true);
-        }
-      } catch (error) {
-        console.error('Action code error:', error);
-        setNotification({
-          message: lang === 'FR' ? '❌ Lien invalide ou expiré.' : '❌ Invalid or expired link.',
-          type: 'error'
-        });
-        setTimeout(() => setNotification(null), 5000);
-        window.history.replaceState({}, '', window.location.pathname);
-      }
-    };
-
-    handleActionCode();
-  }, [lang]);
 
   // ── Traitement retour redirect Google ──────────────────────────────────────
   useEffect(() => {
@@ -285,13 +236,14 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
           if (!snap.empty) {
             const data = snap.docs[0].data();
             const role = data.role;
+            // Déconnecter si pas candidat
             if (role && role !== 'candidate') {
-              console.log('[Auth] Non-candidate role — signing out:', role);
               await signOut(auth); setUser(null); setAuthLoading(false); return;
             }
-            console.log('[Auth] Candidate logged in:', data.fullName || data.email || u.uid);
           } else {
-            console.log('[Auth] No Firestore doc — creating minimal doc');
+            // Pas de document Firestore → compte Google sans profil
+            // Créer un doc minimal et laisser l'onboarding s'afficher
+            console.log('[Auth] No Firestore user doc — creating minimal doc for Google user');
             try {
               const { addDoc, collection: col3, serverTimestamp: st3 } = await import('firebase/firestore');
               await addDoc(col3(db, 'users'), {
@@ -303,18 +255,18 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                 fullName: u.displayName || '',
                 phone: '',
                 profileComplete: false,
-                loginMethod: 'google',
-                gmailConfirmed: true,
                 createdAt: st3(),
                 source: 'google',
               });
-              console.log('[Auth] Minimal doc created for Google user');
+              console.log('[Auth] Minimal doc created successfully');
             } catch (createErr) {
-              console.warn('[Auth] Failed to create user doc (non-blocking):', createErr);
+              console.warn('[Auth] Failed to create user doc:', createErr);
+              // On continue quand même — l'onboarding s'affichera
             }
           }
         } catch (firestoreErr) {
-          console.warn('[Auth] Firestore error (non-blocking):', firestoreErr);
+          // Erreur Firestore (réseau, règles, etc.) — on connecte quand même l'utilisateur
+          console.warn('[Auth] Firestore lookup failed:', firestoreErr);
         }
         setUser(u);
       } else {
@@ -342,6 +294,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
       return;
     }
 
+    // Applications listen
     const qApps = query(
       collection(db, 'applications'),
       where('userId', '==', user?.uid),
@@ -355,6 +308,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
       handleFirestoreError(error, OperationType.LIST, 'applications');
     });
 
+    // Profile listen
     const unsubscribeProfile = onSnapshot(doc(db, 'candidateProfiles', user?.uid), async (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
@@ -377,6 +331,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
         }));
         const hasKeyData = !!(data.fullName && data.phone);
         if (!data.profileComplete && !hasKeyData) {
+          // candidateProfiles exists but is empty shell — check users collection for real data
           try {
             const { getDocs, query: q2, collection: col2, where: wh } = await import('firebase/firestore');
             const usersSnap = await getDocs(q2(col2(db, 'users'), wh('firebaseUid', '==', user?.uid)));
@@ -384,6 +339,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
               const uData = usersSnap.docs[0].data();
               const uHasData = !!(uData.fullName && uData.phone);
               if (uHasData) {
+                // Merge users data into profileForm and mark complete
                 setProfileForm(prev => ({
                   ...prev,
                   fullName: uData.fullName || prev.fullName,
@@ -398,6 +354,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                   availability: uData.availability || prev.availability,
                 }));
                 if (uData.cvUrl) { setCvUrl(uData.cvUrl); setCvFileName(uData.cvFileName || 'CV.pdf'); }
+                // Update candidateProfiles with real data
                 updateDoc(doc(db, 'candidateProfiles', user?.uid), {
                   ...uData,
                   profileComplete: true,
@@ -410,6 +367,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
               }
             }
           } catch (e) { console.warn('users fallback failed:', e); }
+          // Truly empty — show onboarding
           setIsNewUser(true);
           setOnboardingStep(1);
         } else {
@@ -446,6 +404,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                 ...data, userId: user?.uid, firebaseUid: user?.uid,
                 profileComplete: true, createdAt: st2(),
               }).catch(() => {});
+              // Set profile so photoUrl is available for avatar display
               setProfile({ id: usersSnap.docs[0].id, ...data });
               setIsNewUser(false);
               setProfileChecked(true);
@@ -467,6 +426,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
       handleFirestoreError(error, OperationType.GET, `candidateProfiles/${user?.uid}`);
     });
 
+    // Messages listen
     const qMessages = query(
       collection(db, 'messages'),
       where('participantIds', 'array-contains', user?.uid),
@@ -478,6 +438,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
       handleFirestoreError(error, OperationType.LIST, 'messages');
     });
 
+    // Jobs listen
     const qJobs = query(collection(db, 'jobs'), orderBy('createdAt', 'desc'));
     const unsubscribeJobs = onSnapshot(qJobs, (snapshot) => {
       setJobs(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -485,6 +446,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
       handleFirestoreError(error, OperationType.LIST, 'jobs');
     });
 
+    // Notifications temps réel pour le candidat
     const qUserNotifs = query(
       collection(db, 'notifications'),
       where('userId', '==', user?.uid),
@@ -518,13 +480,14 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
         ...(idUrl && { idUrl, idFileName, idDocType }),
         updatedAt: serverTimestamp()
       }, { merge: true });
+      // Sync to users collection for admin visibility
       await updateDoc(doc(db, 'users', user?.uid), {
         displayName: profileForm.fullName,
         fullName: profileForm.fullName,
         phone: profileForm.phone || '',
         ...(cvUrl && { cvUrl, cvFileName }),
         updatedAt: serverTimestamp(),
-      }).catch(() => {});
+      }).catch(() => {}); // ignore if doc doesn't exist yet
       setNotification({ message: lang === 'FR' ? 'Profil mis à jour !' : 'Profile updated!', type: 'success' });
       setTimeout(() => setNotification(null), 3000);
     } catch (error) {
@@ -558,6 +521,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
           const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
           setCvUrl(downloadURL);
           setCvFileName(file.name);
+          // Save immediately to Firestore
           await updateDoc(doc(db, 'candidateProfiles', user?.uid), {
             cvUrl: downloadURL,
             cvFileName: file.name,
@@ -633,6 +597,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
         updatedAt: serverTimestamp(),
         profileComplete: true,
       }, { merge: true });
+      // Mettre à jour le doc users (chercher par firebaseUid car addDoc génère un ID auto)
       try {
         const { getDocs, query: q3, collection: col3, where: wh3, updateDoc, doc: d3 } = await import('firebase/firestore');
         const usersSnap = await getDocs(q3(col3(db, 'users'), wh3('firebaseUid', '==', user.uid)));
@@ -727,7 +692,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
         text: newMessage,
         senderId: user?.uid,
         senderName: profileForm.fullName || user.displayName || 'Candidat',
-        participantIds: [user?.uid, 'admin'],
+        participantIds: [user?.uid, 'admin'], // Simple chat with admin/team
         createdAt: serverTimestamp()
       });
       setNewMessage('');
@@ -740,65 +705,28 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
 
   const login = async () => {
     try {
-      setLoginError('');
       const provider = new GoogleAuthProvider();
-      // signInWithPopup au lieu de signInWithRedirect : la page reste sur
-      // vediorgm.com en permanence — seule une popup s'ouvre brièvement vers
-      // Google/Firebase pour l'authentification (incontournable pour tout
-      // login Google), sans jamais rediriger l'onglet principal. Évite aussi
-      // le bug "missing initial state" du redirect cross-origin.
-      const result = await authSignInWithPopup(auth, provider);
-      const u = result.user;
-      try {
-        const { getDoc: gd, doc: d2, setDoc: sd } = await import('firebase/firestore');
-        const userRef = d2(db, 'users', u.uid);
-        const userSnap = await gd(userRef);
-        if (!userSnap.exists()) {
-          await sd(userRef, {
-            uid: u.uid,
-            firebaseUid: u.uid,
-            email: u.email || '',
-            displayName: u.displayName || '',
-            photoURL: u.photoURL || '',
-            role: 'candidate',
-            status: 'active',
-            loginMethod: 'google',
-            createdAt: serverTimestamp(),
-            gmailConfirmed: true,
-            profileComplete: false,
-          });
-        }
-        const profileRef = d2(db, 'candidateProfiles', u.uid);
-        const profileSnap = await gd(profileRef);
-        if (!profileSnap.exists()) {
-          await sd(profileRef, {
-            uid: u.uid,
-            email: u.email || '',
-            fullName: u.displayName || '',
-            profileComplete: false,
-            createdAt: serverTimestamp(),
-          });
-        }
-      } catch (e) {
-        console.warn('[Auth] Google login user doc error:', e);
-      }
+      // Utiliser redirect au lieu de popup pour éviter les erreurs COOP
+      await signInWithRedirect(auth, provider);
+      return; // La page va se recharger, getRedirectResult() s'en occupe
     } catch (err: any) {
-      console.error('[Auth] Google popup error:', err);
-      if (err.code !== 'auth/popup-closed-by-user' && err.code !== 'auth/cancelled-popup-request') {
-        setLoginError(err.message || 'Erreur connexion Google');
-      }
+      console.error('[Auth] Google redirect error:', err);
+      setLoginError(err.message || 'Erreur connexion Google');
     }
   };
 
+  // ── Traitement du retour après redirect Google ──────────────────────────────
   const loginLegacy = async () => {
     try {
       const provider = new GoogleAuthProvider();
       const result = await authSignInWithPopup(auth, provider);
       const u = result.user;
+      // Vérifier si déjà enregistré dans Firestore
       const { getDoc: gd, doc: d2, setDoc: sd } = await import('firebase/firestore');
       const userRef = d2(db, 'users', u.uid);
       const userSnap = await gd(userRef);
       if (!userSnap.exists()) {
+        // Première connexion Google → créer dans 'users'
         await sd(userRef, {
           uid: u.uid,
           firebaseUid: u.uid,
@@ -812,6 +740,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
           gmailConfirmed: true,
           profileComplete: false,
         });
+        // BUG 3 FIX: Also create empty candidateProfiles so listeners don't fail
         const profileRef = d2(db, 'candidateProfiles', u.uid);
         const profileSnap = await gd(profileRef);
         if (!profileSnap.exists()) {
@@ -861,6 +790,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
       const cred = await createUserWithEmailAndPassword(auth, loginEmail, loginPassword);
       const u = cred.user;
 
+      // BUG 7 FIX: Send email verification — via Resend (Cloud Function), plus l'email natif Firebase
       try {
         const fns = getFunctions(db.app, 'europe-west1');
         const call = httpsCallable(fns, 'sendVerificationEmail');
@@ -869,6 +799,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
         console.error('sendVerificationEmail failed:', verifyErr);
       }
 
+      // Save to Firestore
       const { doc: d2, setDoc: sd } = await import('firebase/firestore');
       await sd(d2(db, 'users', u.uid), {
         uid: u.uid,
@@ -883,6 +814,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
         profileComplete: false,
         emailVerified: false,
       });
+      // Also create empty candidateProfiles (BUG 3 FIX)
       await sd(d2(db, 'candidateProfiles', u.uid), {
         uid: u.uid,
         email: u.email || loginEmail,
@@ -892,7 +824,9 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
       });
 
       setLoginError('');
-      setLoginResetSent(true);
+      // Show verification message
+      setLoginResetSent(true); // reuse this state to show success message
+      // Sécurité : ne jamais garder le mot de passe en mémoire après création du compte
       setLoginPassword('');
       setLoginConfirm('');
     } catch (error: any) {
@@ -954,7 +888,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
       };
       setLoginError(codes[error.code] || `Login failed (${error.code}). Please contact Vedior GM.`);
     } finally { setLoginLoading(false); }
-  };
+  };;;;
+
 
   const stats = {
     total: applications.length,
@@ -963,107 +898,10 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
     accepted: applications.filter(a => a.status === 'hired').length
   };
 
-  // ══════════════════════════════════════════
-  // RENDU — Priorité au formulaire de réinitialisation
-  // ══════════════════════════════════════════
-  if (showResetForm && resetCode) {
-    return (
-      <div style={{ minHeight: '100vh', backgroundColor: '#0A192F', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px', overflowX: 'hidden', position: 'relative' }}>
-        <div style={{ position: 'absolute', top: 0, left: 0, width: '40vw', maxWidth: 500, height: 500, backgroundColor: '#f97316', borderRadius: '50%', filter: 'blur(160px)', transform: 'translate(-50%,-50%)', opacity: 0.07, pointerEvents: 'none' }} />
-        <div style={{ position: 'absolute', bottom: 0, right: 0, width: '40vw', maxWidth: 500, height: 500, backgroundColor: '#3b82f6', borderRadius: '50%', filter: 'blur(160px)', transform: 'translate(50%,50%)', opacity: 0.07, pointerEvents: 'none' }} />
-        <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} style={{ width: '100%', maxWidth: '460px', position: 'relative', zIndex: 10 }}>
-          <div style={{ textAlign: 'center', marginBottom: '32px' }}>
-            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '16px' }}><Logo inverted /></div>
-            <h2 style={{ color: '#fff', fontSize: '22px', fontWeight: 900, textTransform: 'uppercase', fontStyle: 'italic', letterSpacing: '-0.02em' }}>
-              {lang === 'FR' ? 'Nouveau mot de passe' : 'New password'}
-            </h2>
-            <p style={{ color: 'rgba(255,255,255,0.35)', fontSize: '11px', fontWeight: 700, letterSpacing: '0.2em', textTransform: 'uppercase', marginTop: '8px' }}>
-              {lang === 'FR' ? 'Pour le compte' : 'For account'} <span style={{ color: '#f97316' }}>{resetEmail}</span>
-            </p>
-          </div>
-          <div style={{ backgroundColor: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '32px', padding: '32px' }}>
-            <form onSubmit={async (e) => {
-              e.preventDefault();
-              if (newPassword !== resetConfirmPassword) {
-                setNotification({ message: lang === 'FR' ? 'Les mots de passe ne correspondent pas.' : 'Passwords do not match.', type: 'error' });
-                setTimeout(() => setNotification(null), 3000);
-                return;
-              }
-              if (newPassword.length < 6) {
-                setNotification({ message: lang === 'FR' ? 'Minimum 6 caractères.' : 'Minimum 6 characters.', type: 'error' });
-                setTimeout(() => setNotification(null), 3000);
-                return;
-              }
-              setResetLoading(true);
-              try {
-                await confirmPasswordReset(auth, resetCode, newPassword);
-                setNotification({ message: lang === 'FR' ? '✅ Mot de passe mis à jour !' : '✅ Password updated!', type: 'success' });
-                setTimeout(() => {
-                  setNotification(null);
-                  setShowResetForm(false);
-                  setResetCode('');
-                  setResetEmail('');
-                  window.history.replaceState({}, '', window.location.pathname);
-                }, 2000);
-              } catch (error) {
-                console.error('Reset error:', error);
-                setNotification({ message: lang === 'FR' ? '❌ Erreur, lien invalide ou expiré.' : '❌ Invalid or expired link.', type: 'error' });
-                setTimeout(() => setNotification(null), 4000);
-              } finally {
-                setResetLoading(false);
-              }
-            }}>
-              <div style={{ marginBottom: '16px' }}>
-                <label style={{ color: 'rgba(255,255,255,0.4)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.15em', display: 'block', marginBottom: '8px' }}>
-                  {lang === 'FR' ? 'Nouveau mot de passe' : 'New password'}
-                </label>
-                <input
-                  type="password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  required
-                  minLength={6}
-                  style={{ width: '100%', backgroundColor: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff', borderRadius: '14px', padding: '14px 18px', fontWeight: 700, fontSize: '14px', outline: 'none', boxSizing: 'border-box' }}
-                />
-              </div>
-              <div style={{ marginBottom: '24px' }}>
-                <label style={{ color: 'rgba(255,255,255,0.4)', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.15em', display: 'block', marginBottom: '8px' }}>
-                  {lang === 'FR' ? 'Confirmer' : 'Confirm'}
-                </label>
-                <input
-                  type="password"
-                  value={resetConfirmPassword}
-                  onChange={(e) => setResetConfirmPassword(e.target.value)}
-                  required
-                  minLength={6}
-                  style={{ width: '100%', backgroundColor: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', color: '#fff', borderRadius: '14px', padding: '14px 18px', fontWeight: 700, fontSize: '14px', outline: 'none', boxSizing: 'border-box' }}
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={resetLoading}
-                style={{
-                  width: '100%', background: resetLoading ? 'rgba(249,115,22,0.5)' : '#f97316', color: 'white',
-                  border: 'none', borderRadius: '14px', padding: '16px',
-                  fontWeight: 900, fontSize: '13px', letterSpacing: '0.1em', textTransform: 'uppercase',
-                  cursor: resetLoading ? 'not-allowed' : 'pointer'
-                }}
-              >
-                {resetLoading ? '...' : (lang === 'FR' ? 'Mettre à jour' : 'Update')}
-              </button>
-            </form>
-          </div>
-          {notification && (
-            <div style={{ marginTop: '16px', padding: '12px 16px', borderRadius: '14px', backgroundColor: notification.type === 'success' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)', border: `1px solid ${notification.type === 'success' ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`, color: notification.type === 'success' ? '#4ade80' : '#f87171', fontSize: '13px', fontWeight: 700, textAlign: 'center' }}>
-              {notification.message}
-            </div>
-          )}
-        </motion.div>
-      </div>
-    );
-  }
 
-  // ── ONBOARDING ──
+  // ══════════════════════════════════════════
+  // ONBOARDING — Nouvel utilisateur
+  // ══════════════════════════════════════════
   if (user && profileChecked && isNewUser) {
     const steps = [
       { num: 1, label: lang === 'FR' ? 'Identité' : 'Identity' },
@@ -1074,9 +912,13 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
 
     return (
       <div style={{ minHeight: '100vh', backgroundColor: '#0A192F', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px', overflowX: 'hidden', position: 'relative' }}>
+        {/* Blobs */}
         <div style={{ position: 'absolute', top: 0, left: 0, width: '40vw', maxWidth: 500, height: 500, backgroundColor: '#f97316', borderRadius: '50%', filter: 'blur(160px)', transform: 'translate(-50%,-50%)', opacity: 0.07, pointerEvents: 'none' }} />
         <div style={{ position: 'absolute', bottom: 0, right: 0, width: '40vw', maxWidth: 500, height: 500, backgroundColor: '#3b82f6', borderRadius: '50%', filter: 'blur(160px)', transform: 'translate(50%,50%)', opacity: 0.07, pointerEvents: 'none' }} />
+
         <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} style={{ width: '100%', maxWidth: '520px', position: 'relative', zIndex: 10 }}>
+
+          {/* Header */}
           <div style={{ textAlign: 'center', marginBottom: '32px' }}>
             <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '20px' }}><Logo inverted /></div>
             <h2 style={{ color: '#fff', fontSize: '26px', fontWeight: 900, textTransform: 'uppercase', fontStyle: 'italic', letterSpacing: '-0.02em' }}>
@@ -1086,6 +928,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
               {lang === 'FR' ? 'Complétez votre profil pour commencer' : 'Complete your profile to get started'}
             </p>
           </div>
+
+          {/* Progress steps */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginBottom: '28px' }}>
             {steps.map((s, i) => (
               <React.Fragment key={s.num}>
@@ -1106,7 +950,11 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
               </React.Fragment>
             ))}
           </div>
+
+          {/* Card */}
           <div style={{ backgroundColor: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '32px', padding: '32px' }}>
+
+            {/* STEP 1 — Identité */}
             {onboardingStep === 1 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <p style={{ color: '#f97316', fontSize: '10px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.2em', marginBottom: '8px' }}>
@@ -1176,6 +1024,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                 </div>
               </div>
             )}
+
+            {/* STEP 2 — Formation */}
             {onboardingStep === 2 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <p style={{ color: '#f97316', fontSize: '10px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.2em', marginBottom: '8px' }}>
@@ -1231,6 +1081,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                 </div>
               </div>
             )}
+
+            {/* STEP 3 — Disponibilité */}
             {onboardingStep === 3 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <p style={{ color: '#f97316', fontSize: '10px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.2em', marginBottom: '8px' }}>
@@ -1257,6 +1109,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                 </div>
               </div>
             )}
+
+            {/* STEP 4 — Upload CV obligatoire */}
             {onboardingStep === 4 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <p style={{ color: '#f97316', fontSize: '10px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.2em', marginBottom: '8px' }}>
@@ -1300,7 +1154,10 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                 )}
               </div>
             )}
+
           </div>
+
+          {/* Navigation buttons */}
           <div style={{ display: 'flex', gap: '12px', marginTop: '20px' }}>
             {onboardingStep > 1 && (
               <button onClick={() => setOnboardingStep(s => s - 1)}
@@ -1346,16 +1203,20 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
               </button>
             )}
           </div>
+
+          {/* Notification inline */}
           {notification && (
             <div style={{ marginTop: '16px', padding: '12px 16px', borderRadius: '14px', backgroundColor: notification.type === 'success' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)', border: `1px solid ${notification.type === 'success' ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`, color: notification.type === 'success' ? '#4ade80' : '#f87171', fontSize: '13px', fontWeight: 700, textAlign: 'center' }}>
               {notification.message}
             </div>
           )}
+
         </motion.div>
       </div>
     );
   }
 
+  // Firebase not resolved yet — show spinner, never flash dashboard or login
   if (authLoading) {
     return (
       <div className="fixed inset-0 bg-[#0A192F] flex items-center justify-center">
@@ -1364,6 +1225,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
     );
   }
 
+  // Still waiting for profile check → spinner with escape
   if (user && !profileChecked) {
     return (
       <div className="fixed inset-0 bg-[#0A192F] flex flex-col items-center justify-center gap-5">
@@ -1377,6 +1239,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
     );
   }
 
+  // ══ LOGIN SCREEN (user = null) ══
   if (!user && !authLoading) {
     return (
       <div style={{ minHeight: '100vh', backgroundColor: '#0A192F', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px', position: 'relative', overflow: 'hidden' }}>
@@ -1460,6 +1323,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                 {lang === 'FR' ? 'Numéro inconnu ?' : 'Unknown number?'}{' '}
                 <a href="mailto:vediordjib.it@gmail.com" style={{ color: '#f97316', fontWeight: 700, textDecoration: 'none' }}>Contact Vedior GM</a>
               </p>
+
+
             </div>
           )}
           {loginTab === 'google' && (
@@ -1485,7 +1350,6 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
     );
   }
 
-  // ── DASHBOARD PRINCIPAL ──
   return (
     <div dir={dir} className="fixed inset-0 bg-[#F0F2F8] text-gray-900 font-sans flex overflow-hidden relative">
       <AnimatePresence>
@@ -1507,6 +1371,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
       </AnimatePresence>
       {/* SIDEBAR */}
       <aside className={`${sidebarOpen ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0 fixed lg:sticky lg:top-0 z-50 w-[240px] min-w-[240px] bg-[#12152B] text-white flex flex-col overflow-hidden shrink-0 h-screen transition-transform duration-300`}>
+        {/* Logo */}
         <div className="px-5 pt-6 pb-5 border-b border-white/[0.06] cursor-pointer" onClick={onBack}>
           <div className="flex items-center gap-3">
             <div className="w-[34px] h-[34px] rounded-[9px] bg-orange-500 flex items-center justify-center shrink-0">
@@ -1516,6 +1381,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
           </div>
           <span className="text-[10px] text-orange-400 font-semibold uppercase tracking-[0.12em] block mt-2">{lang === 'FR' ? 'Espace Candidat' : 'Candidate Space'}</span>
         </div>
+
+        {/* Nav */}
         <nav className="flex-1 px-3 py-5 overflow-y-auto">
           <p className="px-2 mb-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-white/25">{lang === 'FR' ? 'Principal' : 'Main'}</p>
           <CandNavItem icon={LayoutDashboard} label={lang === 'FR' ? 'Tableau de bord' : 'Dashboard'} active={activeTab === 'dashboard'} onClick={() => { setActiveTab('dashboard'); setSidebarOpen(false); }} />
@@ -1527,6 +1394,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
           <CandNavItem icon={User} label={lang === 'FR' ? 'Mon Profil' : 'My Profile'} active={activeTab === 'profile'} onClick={() => { setActiveTab('profile'); setSidebarOpen(false); }} />
           <CandNavItem icon={Settings} label={lang === 'FR' ? 'Paramètres' : 'Settings'} active={activeTab === 'settings'} onClick={() => { setActiveTab('settings'); setSidebarOpen(false); }} />
         </nav>
+
+        {/* User card + logout */}
         <div className="mt-auto p-3 border-t border-white/[0.06]">
           <div className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-[#1E2240] transition-colors">
             <div className="w-[34px] h-[34px] rounded-full overflow-hidden bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center text-xs font-bold text-white shrink-0">
@@ -1541,16 +1410,22 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
             </div>
           </div>
           <button onClick={async () => {
+            // Navigate away immediately — don't wait for Firebase
             if (onSignOutRef.current) { onSignOutRef.current(); } else { onBackRef.current?.(); }
+            // Then sign out Firebase in background
             try { await signOut(auth); } catch(e) { console.warn('signOut error:', e); }
           }} className="mt-3 w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-red-500/10 text-red-300 font-semibold text-[10px] uppercase hover:bg-red-500/20 transition-all">
             <LogOut size={12} /> {lang === 'FR' ? 'Déconnexion' : 'Sign Out'}
           </button>
         </div>
       </aside>
+
+      {/* Mobile sidebar overlay */}
       {sidebarOpen && (
         <div className="fixed inset-0 bg-black/60 z-30 lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
+
+      {/* ── MOBILE BOTTOM NAV ── */}
       <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-[#12152B] border-t border-white/10 flex items-stretch z-40" style={{height:56, paddingBottom:'env(safe-area-inset-bottom,0px)'}}>
         {[
           { tab: 'dashboard', icon: '🏠', labelFR: 'Accueil', labelEN: 'Home' },
@@ -1567,11 +1442,14 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
           </button>
         ))}
       </nav>
+
       <main className="flex-1 flex flex-col overflow-auto bg-[#f0f4fb] pb-[70px] lg:pb-0">
+        {/* HEADER */}
         <header className="bg-white border-b border-gray-100 px-3 py-3 flex items-center gap-2 sm:gap-4">
           <button onClick={() => setSidebarOpen(o => !o)} className="lg:hidden flex items-center justify-center w-9 h-9 rounded-xl border border-gray-200 text-gray-500 shrink-0">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
           </button>
+          {/* Left: tab label + greeting */}
           <div>
             <span className="text-blue-500 font-black uppercase tracking-[0.35em] text-[10px] block mb-1">
               {activeTab === 'offers' ? (lang === 'FR' ? 'OFFRES' : 'OFFERS') : activeTab.toUpperCase()}
@@ -1582,7 +1460,10 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
               <span>👋</span>
             </h1>
           </div>
+
+          {/* Right: search + bell + lang */}
           <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
+            {/* Search bar - hidden on mobile */}
             <div className="relative hidden sm:block">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
               <input
@@ -1595,12 +1476,15 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                 <Search size={13} className="text-white" />
               </button>
             </div>
+
+            {/* Bell */}
             <button onClick={() => setShowNotifPanel(v => !v)} className="relative w-10 h-10 bg-gray-50 border border-gray-200 rounded-xl flex items-center justify-center text-gray-500 hover:text-gray-700 transition-colors">
               <Bell size={17} />
               {unreadNotifCount > 0 && (
                 <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-red-500 rounded-full text-white text-[8px] font-black flex items-center justify-center border border-white">{unreadNotifCount > 9 ? '9+' : unreadNotifCount}</span>
               )}
             </button>
+
             <AnimatePresence>
               {showNotifPanel && (
                 <>
@@ -1657,6 +1541,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                 </>
               )}
             </AnimatePresence>
+
+            {/* Language */}
             <button
               onClick={() => setLang(lang === 'FR' ? 'EN' : 'FR' as any)}
               className="flex items-center gap-1.5 px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-[11px] font-black text-gray-600 hover:border-blue-400 transition-all"
@@ -1665,6 +1551,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
             </button>
           </div>
         </header>
+
         <div className="p-3 sm:p-5 lg:p-8">
         <AnimatePresence mode="wait">
           {loading ? (
@@ -1680,7 +1567,11 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
             >
                 {activeTab === 'dashboard' && (
                 <div className="space-y-4">
+
+                  {/* ── HERO ROW ── */}
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+
+                    {/* Profil card */}
                     <div className="lg:col-span-2 bg-gray-900 rounded-2xl p-4 sm:p-8 text-white relative overflow-hidden group">
                       <div className="absolute -top-20 -right-20 w-72 h-72 bg-orange-500/10 rounded-full blur-3xl group-hover:scale-110 transition-transform duration-700" />
                       <div className="relative z-10 flex flex-col h-full gap-6">
@@ -1693,6 +1584,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                             <h2 className="text-xl font-black">{lang === 'FR' ? 'Profil Optimisé' : lang === 'AR' ? 'الملف الشخصي' : 'Optimised Profile'}</h2>
                           </div>
                         </div>
+
+                        {/* Progress bar */}
                         {(() => {
                           const pct = Math.round(([!!profileForm.fullName,!!profileForm.phone,!!profileForm.nationality,!!profileForm.birthDate,!!profileForm.address,!!profileForm.education,!!profileForm.experience,!!profileForm.languages,!!cvUrl,!!idUrl].filter(Boolean).length/10)*100);
                           return (
@@ -1714,6 +1607,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                             </div>
                           );
                         })()}
+
                         <div className="flex flex-wrap gap-3 mt-auto">
                           <button onClick={() => setActiveTab('profile')}
                             className="bg-white text-gray-900 px-6 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-orange-400 hover:text-white transition-all flex items-center gap-2 active:scale-95">
@@ -1726,6 +1620,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                         </div>
                       </div>
                     </div>
+
+                    {/* Messages + quick stats */}
                     <div className="flex flex-col gap-4">
                       <div className="bg-gray-900 rounded-2xl p-5 text-white flex flex-col justify-between flex-1 relative overflow-hidden group">
                         <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-orange-500/10 rounded-full blur-2xl" />
@@ -1741,6 +1637,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                           {lang === 'FR' ? 'Ma boîte mail' : lang === 'AR' ? 'صندوق الرسائل' : 'Check Inbox'}
                         </button>
                       </div>
+
                       <div className="bg-orange-500 rounded-2xl p-4 sm:p-7 text-white relative overflow-hidden">
                         <div className="absolute -top-4 -right-4 w-24 h-24 bg-white/10 rounded-full" />
                         <p className="text-[9px] font-black uppercase tracking-widest mb-1 text-white/70">{lang === 'FR' ? 'OFFRES DISPONIBLES' : lang === 'AR' ? 'وظائف متاحة' : 'AVAILABLE JOBS'}</p>
@@ -1752,6 +1649,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                       </div>
                     </div>
                   </div>
+
+                  {/* ── STATS ROW ── */}
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
                     {[
                       { label: lang === 'FR' ? 'Candidatures' : lang === 'AR' ? 'طلباتي' : 'Applications', val: stats.total, icon: Briefcase, bg: 'bg-white', num: 'text-gray-900' },
@@ -1769,7 +1668,11 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                       </div>
                     ))}
                   </div>
+
+                  {/* ── OFFRES + ACTIVITÉ ── */}
                   <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-3">
+
+                    {/* Offres récentes */}
                     <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
                       <div className="flex items-center justify-between p-4 sm:p-6 border-b border-gray-50">
                         <div>
@@ -1822,6 +1725,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                         </div>
                       )}
                     </div>
+
+                    {/* Activité récente */}
                     <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden flex flex-col">
                       <div className="flex items-center justify-between p-4 sm:p-6 border-b border-gray-50">
                         <div>
@@ -1862,6 +1767,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                       </div>
                     </div>
                   </div>
+
+                  {/* ── CHART ── */}
                   <div className="hidden sm:block bg-white p-4 sm:p-8 rounded-2xl border border-gray-100 shadow-sm">
                     <div className="flex items-center justify-between mb-4 sm:mb-8">
                       <div>
@@ -1891,8 +1798,10 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                       </ResponsiveContainer>
                     </div>
                   </div>
+
                 </div>
               )}
+
               {activeTab === 'applications' && (
                 <div className="space-y-4">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-0 sm:px-6">
@@ -1909,6 +1818,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                        </div>
                     </div>
                   </div>
+                  
                   <div className="grid gap-3">
                     {applications.length > 0 ? (
                       applications.map((app) => (
@@ -1917,6 +1827,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                           <div className="w-11 h-11 bg-gray-900 rounded-xl flex items-center justify-center text-white shrink-0">
                             {app.sector ? getSectorIcon(app.sector) : <Briefcase size={18} />}
                           </div>
+                          
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-black text-gray-900 truncate">{app.jobTitle || 'Candidature Spontanée'}</p>
                             <div className="flex items-center gap-2 mt-1 flex-wrap">
@@ -1925,6 +1836,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                               <span className="text-[9px] font-bold text-gray-400">{app.sector || 'Général'}</span>
                             </div>
                           </div>
+
                           <div className="flex flex-col items-end gap-2 shrink-0">
                             <StatusBadge status={app.status || 'new'} lang={lang} />
                             <button 
@@ -1945,10 +1857,13 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                   </div>
                 </div>
               )}
+
               {activeTab === 'profile' && (
                 <div className="space-y-4">
+                   {/* Profile Header Card */}
                    <div className="bg-white p-4 sm:p-8 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
                       <div className="flex flex-row items-center gap-4 relative z-10">
+                        {/* Avatar compact */}
                         <div className="relative shrink-0">
                           <div className="w-20 h-20 sm:w-28 sm:h-28 bg-gray-900 rounded-2xl sm:rounded-3xl overflow-hidden">
                              {(profile?.photoUrl || profile?.photoURL || user?.photoURL) ? (
@@ -1961,6 +1876,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                              <PlusIcon className="w-4 h-4" />
                           </button>
                         </div>
+                        
+                        {/* Info */}
                         <div className="flex-1 min-w-0">
                           <div className="flex flex-wrap items-center gap-2 mb-1">
                             <h3 className="text-base sm:text-2xl font-black text-gray-900 truncate max-w-[200px] sm:max-w-none">{profileForm.fullName || user?.displayName || user?.email?.split('@')[0]}</h3>
@@ -1968,6 +1885,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                               <ShieldCheck size={10} /> {lang === 'FR' ? 'Vérifié' : 'Verified'}
                             </div>
                           </div>
+                          {/* Masquer email fictif vediorgm.candidate */}
                           {user?.email && !user.email.endsWith('@vediorgm.candidate') && (
                             <p className="text-gray-400 text-xs font-medium mb-2 truncate">{user.email}</p>
                           )}
@@ -1988,7 +1906,9 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                         </div>
                       </div>
                    </div>
+
                    <form onSubmit={handleSaveProfile} className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                      {/* Personal Details Card */}
                       <div className="bg-white p-4 sm:p-8 rounded-xl border border-gray-100 shadow-sm space-y-5">
                         <div className="flex items-center gap-4 mb-2">
                            <div className="w-9 h-9 bg-gray-900 text-white rounded-xl flex items-center justify-center">
@@ -1996,6 +1916,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                            </div>
                            <h3 className="text-xl font-black text-gray-900 font-semibold">{lang === 'FR' ? 'Identité & Contact' : 'Identity & Contact'}</h3>
                         </div>
+
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div className="space-y-1.5">
                             <label className="text-[10px] font-black uppercase tracking-[0.15em] text-gray-400 ml-1 flex items-center gap-1">
@@ -2115,6 +2036,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                           </div>
                         </div>
                       </div>
+
+                      {/* Experience & Education Card */}
                       <div className="bg-white p-4 sm:p-6 rounded-xl border border-gray-100 shadow-sm flex flex-col justify-between">
                         <div className="space-y-5">
                           <div className="flex items-center gap-4">
@@ -2123,6 +2046,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                              </div>
                              <h3 className="text-xl font-black text-gray-900 font-semibold">{lang === 'FR' ? 'Parcours & CV' : 'Background & CV'}</h3>
                           </div>
+
                           <div className="space-y-4">
                             <div className="space-y-3">
                               <label className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 ml-2 italic">{lang === 'FR' ? 'Dernier Diplôme ou Formation' : 'Last Degree or Training'}</label>
@@ -2169,8 +2093,11 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                                 <option value="10+">{lang === 'FR' ? 'Plus de 10 ans' : lang === 'AR' ? 'أكثر من 10 سنوات' : 'More than 10 years'}</option>
                               </select>
                             </div>
+                            
                             <div className="pt-6 relative group/cv">
                                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 ml-2 italic mb-4">{lang === 'FR' ? 'Document CV Actuel' : 'Current CV Document'}</p>
+                               
+                               {/* Hidden file input */}
                                <input
                                  ref={cvInputRef}
                                  type="file"
@@ -2181,6 +2108,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                                    if (file) { setCvFile(file); handleCvUpload(file); }
                                  }}
                                />
+
                                {cvUrl ? (
                                  <div className="bg-gray-900 rounded-2xl p-4 text-white relative overflow-hidden shadow-sm">
                                    <div className="absolute top-0 right-0 w-16 h-16 bg-gray-100 rounded-full blur-3xl -mr-8 -mt-8" />
@@ -2236,10 +2164,14 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                             </div>
                           </div>
                         </div>
+
+                        {/* ID Document Card */}
                         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 sm:p-6 space-y-4">
                           <h3 className="text-xl font-black text-gray-900 font-semibold">
                             {lang === 'FR' ? '🪪 Pièce d\'Identité' : '🪪 Identity Document'}
                           </h3>
+
+                          {/* Doc type selector */}
                           <div className="flex gap-3">
                             {[
                               { value: 'id_card', label: lang === 'FR' ? 'Carte d\'identité' : 'ID Card', icon: '🪪' },
@@ -2259,6 +2191,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                               </button>
                             ))}
                           </div>
+
+                          {/* Hidden file input */}
                           <input
                             ref={idInputRef}
                             type="file"
@@ -2269,6 +2203,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                               if (file) handleIdUpload(file);
                             }}
                           />
+
                           {idUrl ? (
                             <div className="bg-gray-900 rounded-2xl p-4 sm:p-6 text-white relative overflow-hidden shadow-sm">
                               <div className="absolute top-0 right-0 w-24 h-24 bg-gray-100 rounded-full blur-3xl -mr-12 -mt-12" />
@@ -2322,6 +2257,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                             </button>
                           )}
                         </div>
+
                         <div className="pt-12">
                           <button 
                             type="submit" 
@@ -2338,8 +2274,10 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                    </form>
                 </div>
               )}
+
               {activeTab === 'offers' && (
                 <div className="space-y-4">
+                  {/* Title section */}
                   <div>
                     <h2 className="text-2xl font-black text-[#0f1f3d] mb-0.5">
                       Opportunités{' '}
@@ -2349,6 +2287,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                       {lang === 'FR' ? "Trouvez l'emploi qui correspond à votre profil." : "Find the job that matches your profile."}
                     </p>
                   </div>
+
+                  {/* Stat pills */}
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
                     {[
                       { icon: Briefcase,    color: 'bg-blue-100 text-gray-700',   val: jobs.length,             label: lang === 'FR' ? 'Offres disponibles'    : 'Available offers' },
@@ -2367,9 +2307,12 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                       </div>
                     ))}
                   </div>
+
+                  {/* Job cards grid */}
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
                     {jobs.length > 0 ? (
                       jobs.map((job, idx) => {
+                        // Thematic gradient banners per sector
                         const bannerGrads = [
                           'from-blue-100 via-indigo-50 to-blue-200',
                           'from-purple-100 via-pink-50 to-purple-200',
@@ -2382,10 +2325,12 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                         const isSaved = savedJobs.includes(job.id);
                         return (
                           <div key={job.id} className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100 hover:shadow-lg transition-all flex flex-col group">
+                            {/* Banner image area */}
                             <div className={`relative h-16 bg-gradient-to-br ${grad} flex items-center justify-center overflow-hidden`}>
                               <div className="w-10 h-10 rounded-xl bg-white/60 backdrop-blur-sm flex items-center justify-center shadow-md">
                                 <Briefcase size={18} className="text-[#1a56db]" />
                               </div>
+                              {/* Favorite button */}
                               <button
                                 onClick={() => toggleFavorite(job.id)}
                                 className={`absolute top-3 right-3 w-9 h-9 rounded-xl flex items-center justify-center transition-all shadow-sm active:scale-90 ${
@@ -2394,19 +2339,27 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                               >
                                 <Star size={17} fill={isSaved ? 'currentColor' : 'none'} />
                               </button>
+                              {/* Sector icon */}
                               <div className="absolute top-3 left-3 w-11 h-11 rounded-xl bg-white/60 backdrop-blur-sm flex items-center justify-center shadow-sm">
                                 <Briefcase size={20} className="text-[#1a56db]" />
                               </div>
                             </div>
+
+                            {/* Card body */}
                             <div className="p-5 flex flex-col flex-1">
                               <h3 className="text-[15px] font-black text-[#0f1f3d] mb-1.5 leading-tight group-hover:text-[#1a56db] transition-colors">
                                 {job.title}
                               </h3>
+
                               <div className="flex items-center gap-1.5 text-gray-400 text-xs font-medium mb-3">
                                 <MapPin size={13} className="text-[#1a56db] shrink-0" />
                                 <span>{job.location || 'Djibouti Centre'}</span>
                               </div>
+
+                              {/* Divider */}
                               <div className="border-t border-gray-100 mb-3" />
+
+                              {/* Tags row */}
                               <div className="flex flex-wrap gap-2 mb-3">
                                 <span className="flex items-center gap-1 bg-gray-50 border border-gray-100 text-gray-500 text-[10px] font-semibold px-2.5 py-1 rounded-lg">
                                   <Clock size={11} /> {lang === 'FR' ? 'Temps plein' : 'Full-time'}
@@ -2420,9 +2373,13 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                                   </span>
                                 )}
                               </div>
+
+                              {/* Description */}
                               {job.description && (
                                 <p className="text-xs text-gray-400 leading-relaxed mb-3 line-clamp-2">{job.description}</p>
                               )}
+
+                              {/* Footer meta */}
                               <div className="flex items-center justify-between mt-auto pt-3 border-t border-gray-100">
                                 <div className="flex items-center gap-1.5 text-gray-400 text-[11px]">
                                   <Calendar size={12} />
@@ -2433,6 +2390,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                                   {lang === 'FR' ? 'Actif' : 'Active'}
                                 </div>
                               </div>
+
+                              {/* CTA */}
                               <button
                                 onClick={() => handleApply(job)}
                                 className="mt-4 w-full py-3 bg-[#1a56db] hover:bg-[#1648c0] text-white rounded-xl text-[11px] font-black uppercase tracking-normal flex items-center justify-center gap-2 transition-all shadow-md shadow-blue-600/20 active:scale-95"
@@ -2455,12 +2414,14 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                   </div>
                 </div>
               )}
+              
                {activeTab === 'favorites' && (
                 <div className="space-y-12">
                    <div className="px-4">
                      <h2 className="text-4xl font-black text-gray-900 font-semibold mb-4 underline decoration-orange decoration-4 transition-all hover:decoration-8">{lang === 'FR' ? 'Sélection Élite' : 'Elite Selection'}</h2>
                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-normal italic">{lang === 'FR' ? 'Votre curation personnelle des meilleures opportunités' : 'Your personal curation of top tier roles'}</p>
                    </div>
+                   
                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
                       {jobs.filter(j => savedJobs.includes(j.id)).length > 0 ? (
                         jobs.filter(j => savedJobs.includes(j.id)).map(job => (
@@ -2480,6 +2441,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                            <div className="relative z-10 flex-1 flex flex-col">
                              <h3 className="text-2xl font-black text-gray-900 mb-3 tracking-tighter uppercase italic leading-tight group-hover:text-gray-900 transition-colors">{job.title}</h3>
                              <p className="text-[11px] font-black text-gray-900 uppercase tracking-normal mb-10 italic">{job.companyName}</p>
+                             
                              <button 
                                onClick={() => handleApply(job)}
                                className="mt-auto w-full py-5 bg-gray-900 text-white rounded-3xl text-[10px] font-black uppercase tracking-normal hover:bg-gray-900 transition-all shadow-sm shadow-gray-200/30 italic flex items-center justify-center gap-4 active:scale-95 group/btn"
@@ -2500,6 +2462,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                    </div>
                 </div>
               )}
+
               {activeTab === 'messages' && (
                 <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col h-[calc(100vh-180px)] sm:h-[750px] relative">
                    <div className="p-3 sm:p-4 border-b border-gray-100 bg-gray-900 text-white flex items-center justify-between relative overflow-hidden">
@@ -2522,6 +2485,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                         <MoreVertical size={16} />
                       </button>
                    </div>
+
                    <div className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-5 sm:space-y-8 bg-white">
                       {messages.length > 0 ? (
                         messages.map((msg) => (
@@ -2554,6 +2518,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                          </div>
                       )}
                    </div>
+
                    <div className="p-3 bg-white border-t border-gray-100 relative">
                       <form onSubmit={handleSendMessage} className="flex gap-3 items-center">
                          <div className="flex-1 relative group">
@@ -2584,9 +2549,12 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                    </div>
                 </div>
               )}
+
               {activeTab === 'settings' && (
                 <div className="max-w-4xl space-y-12">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-8">
+
+                    {/* Alertes */}
                     <div className="bg-white p-4 sm:p-8 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
                       <div className="absolute top-0 right-0 w-32 h-32 bg-gray-100 rounded-full -mr-16 -mt-16" />
                       <h3 className="text-2xl font-black text-gray-900 font-semibold mb-10 border-l-4 border-gray-300 pl-6">
@@ -2617,7 +2585,9 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                         ))}
                       </div>
                     </div>
+
                     <div className="space-y-10">
+                      {/* Confidentialité */}
                       <div className="bg-gray-900 p-12 rounded-xl text-white shadow-sm relative overflow-hidden group">
                         <div className="absolute inset-0 bg-gradient-to-br from-gray-700/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                         <h3 className="text-2xl font-black font-semibold mb-6 relative z-10">
@@ -2636,6 +2606,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                           {lang === 'FR' ? 'Gérer les clés' : 'Manage keys'}
                         </button>
                       </div>
+
+                      {/* Suppression compte */}
                       <div className="bg-red-50 p-12 rounded-xl border border-red-100 shadow-sm">
                         <h3 className="text-2xl font-black text-red-600 font-semibold mb-4">
                           {lang === 'FR' ? 'Compte' : 'Account'}
@@ -2670,9 +2642,11 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                                   if (!user) return;
                                   setDeletingAccount(true);
                                   try {
+                                    // Supprimer les données Firestore
                                     const { deleteDoc: dd, doc: d2 } = await import('firebase/firestore');
                                     await dd(d2(db, 'candidateProfiles', user?.uid));
                                     await dd(d2(db, 'users', user?.uid));
+                                    // Supprimer le compte Firebase Auth
                                     await user.delete();
                                     onBack();
                                   } catch (err: any) {
@@ -2695,6 +2669,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                         )}
                       </div>
                     </div>
+
                   </div>
                 </div>
               )}
@@ -2703,6 +2678,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
         </AnimatePresence>
         </div>
       </main>
+
+      {/* ── Application Detail Modal ── */}
       {selectedApp && (
         <div 
           className="fixed inset-0 z-[200] flex items-end sm:items-center justify-center p-0 sm:p-6"
@@ -2716,6 +2693,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
             className="bg-white rounded-[2rem] shadow-sm w-full max-w-2xl overflow-hidden"
             onClick={e => e.stopPropagation()}
           >
+            {/* Header */}
             <div className="bg-gray-900 px-8 py-6 flex items-center justify-between">
               <div>
                 <p className="text-gray-900 text-[10px] font-black uppercase tracking-normal mb-1">Ref: {selectedApp.id?.slice(-8).toUpperCase()}</p>
@@ -2725,16 +2703,22 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                 <X size={18} />
               </button>
             </div>
+
+            {/* Body */}
             <div className="p-5 space-y-4">
+              {/* Status */}
               <div className="flex items-center gap-3">
                 <StatusBadge status={selectedApp.status || 'new'} lang={lang} />
                 <span className="text-[10px] font-black uppercase tracking-normal text-gray-400">
                   {selectedApp.createdAt?.toDate?.()?.toLocaleDateString() || ''}
                 </span>
               </div>
+
+              {/* Info grid */}
               <div className="grid grid-cols-2 gap-2">
                 {[
                   { label: lang === 'FR' ? 'Nom Complet' : 'Full Name', value: selectedApp.fullName },
+                  // Hide fake @vediorgm.candidate emails
                   ...(!selectedApp.email?.endsWith('@vediorgm.candidate') ? [{ label: lang === 'FR' ? 'Email' : 'Email', value: selectedApp.email || '—' }] : []),
                   { label: lang === 'FR' ? 'Téléphone' : 'Phone', value: selectedApp.phone || '—' },
                   { label: lang === 'FR' ? 'Nationalité' : 'Nationality', value: selectedApp.nationality || '—' },
@@ -2749,6 +2733,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                   </div>
                 ))}
               </div>
+
+              {/* Address */}
               {selectedApp.address && (
                 <div className="bg-gray-50 rounded-xl p-3">
                   <p className="text-[9px] font-black uppercase tracking-normal text-gray-400 mb-0.5">{lang === 'FR' ? 'Adresse' : 'Address'}</p>
@@ -2756,6 +2742,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                 </div>
               )}
             </div>
+
+            {/* Footer */}
             <div className="px-5 pb-5">
               <button
                 onClick={() => setSelectedApp(null)}
@@ -2770,6 +2758,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
     </div>
   );
 }
+
 
 function CandNavItem({ icon: Icon, label, active, onClick, badge }: { icon: any, label: string, active: boolean, onClick: () => void, badge?: number }) {
   return (
@@ -2788,6 +2777,7 @@ function CandNavItem({ icon: Icon, label, active, onClick, badge }: { icon: any,
   );
 }
 
+// Helper components
 const PlusIcon = (props: any) => (
   <svg {...props} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
     <line x1="12" y1="5" x2="12" y2="19"></line>
