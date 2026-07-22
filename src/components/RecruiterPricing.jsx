@@ -447,12 +447,29 @@ export default function RecruiterPricing({ lang: langProp = "FR" }){
         setCacLoading(false);
         return;
       }
+      // Récupérer l'ID du recruteur depuis Firestore (même logique que confirmCacPayment)
+      const recruitersSnap = await getDocs(query(collection(db, 'recruiters'), where('email', '==', user.email)));
+      let recruiterId = null;
+      if (!recruitersSnap.empty) {
+        recruiterId = recruitersSnap.docs[0].id;
+      } else {
+        const newRecruiterRef = await addDoc(collection(db, 'recruiters'), {
+          email: user.email,
+          displayName: user.displayName || '',
+          companyName: '',
+          plan: 'free',
+          createdAt: new Date().toISOString(),
+        });
+        recruiterId = newRecruiterRef.id;
+      }
       const response = await fetch('/api/payment/cac/initiate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          phone: cleanPhone,
+          phoneNumber: cleanPhone,
           amount: plan.price,
+          recruiterId: recruiterId,
+          plan: plan.id,
         }),
       });
       const data = await response.json();
