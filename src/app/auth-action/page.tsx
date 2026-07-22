@@ -13,8 +13,8 @@ type Status = 'loading' | 'ready' | 'submitting' | 'success' | 'error' | 'verify
 
 export default function AuthActionPage() {
   const searchParams = useSearchParams();
-  const mode = searchParams.get('mode');
-  const oobCode = searchParams.get('oobCode');
+  const mode = searchParams?.get('mode') ?? null;
+  const oobCode = searchParams?.get('oobCode') ?? null;
 
   const [status, setStatus] = useState<Status>('loading');
   const [email, setEmail] = useState<string>('');
