@@ -700,14 +700,38 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
   };
 
   const login = async () => {
+    setLoginError('');
     try {
       const provider = new GoogleAuthProvider();
-      // Utiliser redirect au lieu de popup pour éviter les erreurs COOP
-      await signInWithRedirect(auth, provider);
-      return; // La page va se recharger, getRedirectResult() s'en occupe
+      provider.setCustomParameters({ prompt: 'select_account' });
+      const result = await authSignInWithPopup(auth, provider);
+      const u = result.user;
+      // Créer le doc Firestore si première connexion
+      const userRef = doc(db, 'users', u.uid);
+      const userSnap = await getDoc(userRef);
+      if (!userSnap.exists()) {
+        await setDoc(userRef, {
+          uid: u.uid,
+          firebaseUid: u.uid,
+          email: u.email || '',
+          displayName: u.displayName || '',
+          fullName: u.displayName || '',
+          photoUrl: u.photoURL || '',
+          role: 'candidate',
+          status: 'active',
+          loginMethod: 'google',
+          gmailConfirmed: true,
+          profileComplete: false,
+          phone: '',
+          createdAt: serverTimestamp(),
+          source: 'google_self_register',
+        });
+      }
     } catch (err: any) {
-      console.error('[Auth] Google redirect error:', err);
-      setLoginError(err.message || 'Erreur connexion Google');
+      if (err.code !== 'auth/popup-closed-by-user' && err.code !== 'auth/cancelled-popup-request') {
+        console.error('[Auth] Google popup error:', err);
+        setLoginError('Erreur connexion Google. Réessayez.');
+      }
     }
   };
 
