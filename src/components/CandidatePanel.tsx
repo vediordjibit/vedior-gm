@@ -15,16 +15,13 @@ import { getStorage, ref, uploadBytesResumable, getDownloadURL } from 'firebase/
 import { useTranslation } from '../lib/i18n';
 import { useCompanyInfo } from '../lib/useCompanyInfo';
 import { 
-  collection, query, where, orderBy, onSnapshot, doc, setDoc, addDoc, serverTimestamp, updateDoc
+  collection, query, where, orderBy, onSnapshot, doc, getDoc, setDoc, addDoc, deleteDoc, serverTimestamp, updateDoc, getDocs
 } from 'firebase/firestore';
 import { 
   signInWithPopup as authSignInWithPopup, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut,
   signInWithEmailAndPassword, createUserWithEmailAndPassword,
   sendPasswordResetEmail, sendEmailVerification
 } from 'firebase/auth';
-import {
-  getDocs
-} from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 
 const Logo = ({ inverted = false, size = "sm" }: { inverted?: boolean; size?: "sm" | "md" | "lg" }) => {
@@ -201,11 +198,10 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
       if (!result) return;
       const u = result.user;
       try {
-        const { getDoc: gd, doc: d2, setDoc: sd } = await import('firebase/firestore');
-        const userRef = d2(db, 'users', u.uid);
-        const userSnap = await gd(userRef);
+        const userRef = doc(db, 'users', u.uid);
+        const userSnap = await getDoc(userRef);
         if (!userSnap.exists()) {
-          await sd(userRef, {
+          await setDoc(userRef, {
             uid: u.uid,
             firebaseUid: u.uid,
             email: u.email || '',
@@ -242,11 +238,10 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
             }
           } else {
             // Pas de document Firestore → compte Google sans profil
-            // Créer un doc minimal et laisser l'onboarding s'afficher
-            console.log('[Auth] No Firestore user doc — creating minimal doc for Google user');
+            // Créer un doc minimal avec les imports statiques (pas d'import dynamique)
+            console.log('[Auth] No Firestore doc — creating minimal doc');
             try {
-              const { addDoc, collection: col3, serverTimestamp: st3 } = await import('firebase/firestore');
-              await addDoc(col3(db, 'users'), {
+              await addDoc(collection(db, 'users'), {
                 firebaseUid: u.uid,
                 email: u.email || '',
                 displayName: u.displayName || '',
@@ -255,13 +250,14 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                 fullName: u.displayName || '',
                 phone: '',
                 profileComplete: false,
-                createdAt: st3(),
+                loginMethod: 'google',
+                gmailConfirmed: true,
+                createdAt: serverTimestamp(),
                 source: 'google',
               });
-              console.log('[Auth] Minimal doc created successfully');
+              console.log('[Auth] Minimal doc created');
             } catch (createErr) {
-              console.warn('[Auth] Failed to create user doc:', createErr);
-              // On continue quand même — l'onboarding s'affichera
+              console.warn('[Auth] Failed to create user doc (non-blocking):', createErr);
             }
           }
         } catch (firestoreErr) {
@@ -333,8 +329,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
         if (!data.profileComplete && !hasKeyData) {
           // candidateProfiles exists but is empty shell — check users collection for real data
           try {
-            const { getDocs, query: q2, collection: col2, where: wh } = await import('firebase/firestore');
-            const usersSnap = await getDocs(q2(col2(db, 'users'), wh('firebaseUid', '==', user?.uid)));
+
+            const usersSnap = await getDocs(query(collection(db, 'users'), where('firebaseUid', '==', user?.uid)));
             if (!usersSnap.empty) {
               const uData = usersSnap.docs[0].data();
               const uHasData = !!(uData.fullName && uData.phone);
@@ -379,8 +375,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
         setProfileChecked(true);
       } else {
         try {
-          const { getDocs, query: q2, collection: col2, where: wh } = await import('firebase/firestore');
-          const usersSnap = await getDocs(q2(col2(db, 'users'), wh('firebaseUid', '==', user?.uid)));
+
+          const usersSnap = await getDocs(query(collection(db, 'users'), where('firebaseUid', '==', user?.uid)));
           if (!usersSnap.empty) {
             const data = usersSnap.docs[0].data();
             const hasData = !!(data.fullName || data.nationality || data.phone);
@@ -399,10 +395,10 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
             }));
             if (data.cvUrl) { setCvUrl(data.cvUrl); setCvFileName(data.cvFileName || 'CV.pdf'); }
             if (hasData) {
-              const { setDoc: sd2, doc: d3, serverTimestamp: st2 } = await import('firebase/firestore');
-              await sd2(d3(db, 'candidateProfiles', user?.uid), {
+
+              await setDoc(doc(db, 'candidateProfiles', user?.uid), {
                 ...data, userId: user?.uid, firebaseUid: user?.uid,
-                profileComplete: true, createdAt: st2(),
+                profileComplete: true, createdAt: serverTimestamp(),
               }).catch(() => {});
               // Set profile so photoUrl is available for avatar display
               setProfile({ id: usersSnap.docs[0].id, ...data });
@@ -599,10 +595,10 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
       }, { merge: true });
       // Mettre à jour le doc users (chercher par firebaseUid car addDoc génère un ID auto)
       try {
-        const { getDocs, query: q3, collection: col3, where: wh3, updateDoc, doc: d3 } = await import('firebase/firestore');
-        const usersSnap = await getDocs(q3(col3(db, 'users'), wh3('firebaseUid', '==', user.uid)));
+
+        const usersSnap = await getDocs(query(collection(db, 'users'), where('firebaseUid', '==', user.uid)));
         if (!usersSnap.empty) {
-          await updateDoc(d3(db, 'users', usersSnap.docs[0].id), {
+          await updateDoc(doc(db, 'users', usersSnap.docs[0].id), {
             displayName: profileForm.fullName,
             fullName: profileForm.fullName,
             phone: profileForm.phone || '',
@@ -722,12 +718,12 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
       const result = await authSignInWithPopup(auth, provider);
       const u = result.user;
       // Vérifier si déjà enregistré dans Firestore
-      const { getDoc: gd, doc: d2, setDoc: sd } = await import('firebase/firestore');
-      const userRef = d2(db, 'users', u.uid);
-      const userSnap = await gd(userRef);
+
+      const userRef = doc(db, 'users', u.uid);
+      const userSnap = await getDoc(userRef);
       if (!userSnap.exists()) {
         // Première connexion Google → créer dans 'users'
-        await sd(userRef, {
+        await setDoc(userRef, {
           uid: u.uid,
           firebaseUid: u.uid,
           email: u.email || '',
@@ -741,10 +737,10 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
           profileComplete: false,
         });
         // BUG 3 FIX: Also create empty candidateProfiles so listeners don't fail
-        const profileRef = d2(db, 'candidateProfiles', u.uid);
-        const profileSnap = await gd(profileRef);
+        const profileRef = doc(db, 'candidateProfiles', u.uid);
+        const profileSnap = await getDoc(profileRef);
         if (!profileSnap.exists()) {
-          await sd(profileRef, {
+          await setDoc(profileRef, {
             uid: u.uid,
             email: u.email || '',
             fullName: u.displayName || '',
@@ -800,8 +796,8 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
       }
 
       // Save to Firestore
-      const { doc: d2, setDoc: sd } = await import('firebase/firestore');
-      await sd(d2(db, 'users', u.uid), {
+
+      await setDoc(doc(db, 'users', u.uid), {
         uid: u.uid,
         firebaseUid: u.uid,
         email: u.email || loginEmail,
@@ -815,7 +811,7 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
         emailVerified: false,
       });
       // Also create empty candidateProfiles (BUG 3 FIX)
-      await sd(d2(db, 'candidateProfiles', u.uid), {
+      await setDoc(doc(db, 'candidateProfiles', u.uid), {
         uid: u.uid,
         email: u.email || loginEmail,
         fullName: '',
@@ -2643,9 +2639,9 @@ export default function CandidatePanel({ onBack, onSignOut }: CandidatePanelProp
                                   setDeletingAccount(true);
                                   try {
                                     // Supprimer les données Firestore
-                                    const { deleteDoc: dd, doc: d2 } = await import('firebase/firestore');
-                                    await dd(d2(db, 'candidateProfiles', user?.uid));
-                                    await dd(d2(db, 'users', user?.uid));
+
+                                    await deleteDoc(doc(db, 'candidateProfiles', user?.uid));
+                                    await deleteDoc(doc(db, 'users', user?.uid));
                                     // Supprimer le compte Firebase Auth
                                     await user.delete();
                                     onBack();
